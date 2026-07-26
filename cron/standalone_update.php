@@ -21,6 +21,18 @@ declare(strict_types=1);
 
 // ── Config ─────────────────────────────────────────────────────────────────────
 
+// Carga .env del root del repo si existe (para uso local)
+$dotenv = dirname(__DIR__) . '/.env';
+if (is_file($dotenv)) {
+    foreach (file($dotenv, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
+        if ($line === '' || $line[0] === '#') continue;
+        if (!str_contains($line, '=')) continue;
+        [$k, $v] = explode('=', $line, 2);
+        $k = trim($k); $v = trim($v, " \t\"'");
+        if ($k !== '' && !getenv($k)) putenv("{$k}={$v}");
+    }
+}
+
 define('SQLITE_FILE',   dirname(__DIR__) . '/data/cartera_v4.sqlite');
 define('TIINGO_KEY',    (string)(getenv('TIINGO_API_KEY') ?: ''));
 define('FRED_KEY',      (string)(getenv('FRED_API_KEY')   ?: ''));

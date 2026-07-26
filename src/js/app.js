@@ -1684,6 +1684,7 @@ function renderFinal() {
     return;
   }
 
+  const dbDate = fmtDbGeneratedAt(state.result.db_generated_at);
   renderLayout(`
     <div class="panel wide-panel">
       <div class="panel-head">
@@ -1691,6 +1692,7 @@ function renderFinal() {
           <h2 class="panel-title">Resultados de ${escapeHtml(portfolio.portfolio_name)}</h2>
           <p class="panel-subtitle">XIRR, Modified Dietz y todos los benchmarks calculados del lado frontend.</p>
         </div>
+        ${dbDate ? `<span class="db-freshness">${icon("database", 13)}Datos al ${escapeHtml(dbDate)}</span>` : ""}
       </div>
       ${rangeControls(portfolio)}
       <div class="result-grid">
@@ -2153,6 +2155,17 @@ function fmtMonth(monthIso) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(monthIso || "")) return monthIso || "";
   const [year, month] = monthIso.split("-");
   return `${month}/${year}`;
+}
+
+function fmtDbGeneratedAt(isoString) {
+  if (!isoString) return null;
+  try {
+    const date = new Date(isoString);
+    if (isNaN(date.getTime())) return null;
+    return date.toLocaleDateString("es-AR", { day: "2-digit", month: "short", year: "numeric", timeZone: "UTC" });
+  } catch {
+    return null;
+  }
 }
 
 function benchmarkSourceLabel(item) {

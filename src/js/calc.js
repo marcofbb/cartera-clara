@@ -425,10 +425,14 @@ export async function calculatePortfolio(portfolio) {
   const end = portfolio.benchmark_end || snapshots[snapshots.length - 1]?.date || "";
   const benchmarks = start && end ? benchmarkReturns(db, start, end, warnings) : [];
 
+  const metaRows = queryRows(db, "SELECT key, value FROM meta");
+  const dbMeta = Object.fromEntries(metaRows.map((r) => [r.key, r.value]));
+
   return {
     results,
     xirr: xirrResults,
     benchmarks,
-    warnings: Array.from(new Set(warnings))
+    warnings: Array.from(new Set(warnings)),
+    db_generated_at: dbMeta.generated_at || null,
   };
 }

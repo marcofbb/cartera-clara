@@ -1,0 +1,43 @@
+name: Daily data update
+
+on:
+  schedule:
+    - cron: '0 21 * * 1-5'   # lun–vie 21:00 UTC (18:00 ART), días hábiles
+  workflow_dispatch:          # permite correr manualmente desde GitHub
+
+permissions:
+  contents: write             # necesario para hacer push del SQLite actualizado
+
+jobs:
+  update:
+    name: Update SQLite from market APIs
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: pdo, pdo_sqlite
+          tools: none
+
+      - name: Run standalone_update.php
+        env:
+          TIINGO_API_KEY: ${{ secrets.TIINGO_API_KEY }}
+          FRED_API_KEY:   ${{ secrets.FRED_API_KEY }}
+        run: php cron/standalone_update.php --verbose
+
+      - name: Commit updated SQLite
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/cartera_v4.sqlite
+          if git diff --cached --quiet; then
+            echo "No hay cambios en el SQLite — nada que commitear."
+          else
+            git commit -m "chore(data): daily market update $(date -u '+%Y-%m-%d')"
+            git push
+          fi

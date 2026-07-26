@@ -405,19 +405,19 @@ function bindGlobalActions() {
 function renderStart() {
   renderLayout(`
     <div class="hero">
-      <div class="eyebrow">Rendimiento de cartera</div>
-      <h2 class="title">Elegí una opción para comenzar</h2>
-      <p class="subtitle">Creá una cartera desde una importación inicial o continuá una cartera ya guardada en este navegador.</p>
+      <div class="eyebrow">Gratis · Sin registro · 100% en tu navegador</div>
+      <h2 class="title">¿Tu cartera le está ganando al dólar, al plazo fijo y a la inflación?</h2>
+      <p class="subtitle">Cartera Clara calcula el XIRR y Modified Dietz de tu cartera en pesos y USD MEP, y la compara contra benchmarks reales: dólar MEP, plazo fijo TNA, UVA, SPY y bonos del Tesoro. Tu información no sale del navegador.</p>
       <div class="start-grid">
         <button class="choice-card" data-action="new">
           <div class="card-icon">${icon("plus", 24)}</div>
           <h2>Crear cartera nueva</h2>
-          <p>Importá movimientos desde brokers disponibles o CSV manual. La cartera se guarda recién al terminar la importación.</p>
+          <p>Importá tus movimientos de Balanz, Inviu o cualquier CSV. En minutos tenés el XIRR del período con comparación contra todos los benchmarks.</p>
         </button>
         <button class="choice-card" data-action="open">
           <div class="card-icon">${icon("folder-open", 24)}</div>
-          <h2>Abrir ya creada</h2>
-          <p>Continuá una cartera guardada, editá movimientos manualmente, cargá snapshots o importá un backup.</p>
+          <h2>Abrir cartera guardada</h2>
+          <p>Retomá una cartera existente, agregá nuevos snapshots de valor y actualizá los resultados.</p>
         </button>
       </div>
     </div>

@@ -1,5 +1,5 @@
 import { parseManualCsv, downloadCsvTemplate } from "./csv.js";
-import { calculatePortfolio } from "./calc.js";
+import { calculatePortfolio, loadMarketDb, queryMarketRows } from "./calc.js";
 import {
   $, buildSnapshotDefaults, cleanMovements, daysBetween, escapeHtml, fmtDate, fmtMoney, fmtPct, fmtPp,
   icon, isIsoDate, makeId, maxDate, normalizeMovement, normalizeSnapshot, refreshIcons,
@@ -77,7 +77,10 @@ const state = {
   calculating: false,
   pluginsLoaded: false,
   pluginLoadErrors: [],
-  pluginFiles: []
+  pluginFiles: [],
+  db: null,
+  dbLoading: false,
+  dbTable: "exchange_rates"
 };
 
 function pluginRegistry() {
@@ -270,6 +273,7 @@ function stepIndex() {
   if (state.screen === "movements") return 2;
   if (state.screen === "snapshots") return 3;
   if (state.screen === "final") return 4;
+  if (state.screen === "db-explorer") return 4;
   return 0;
 }
 
@@ -1718,6 +1722,9 @@ function renderFinal() {
         <button class="btn btn-secondary" data-action="backup">${icon("archive", 16)}Backup JSON</button>
       </div>
       ${calculationExplanation(state.result)}
+      <button class="btn btn-ghost db-explorer-btn" data-action="open-db-explorer">
+        ${icon("database", 15)}Explorar base de datos de mercado
+      </button>
     </div>
   `, {
     afterRender() {
@@ -1728,6 +1735,11 @@ function renderFinal() {
       });
       $("[data-action='backup']").addEventListener("click", () => {
         downloadJson(backupPortfolios([portfolio]), `cartera-v4-${todayIso()}.json`);
+      });
+      $("[data-action='open-db-explorer']").addEventListener("click", () => {
+        state.screen = "db-explorer";
+        state.notice = null;
+        render();
       });
     }
   });
@@ -2194,6 +2206,121 @@ function resultCard(currency, result, xirr, allResult) {
   `;
 }
 
+// ── DB Explorer ───────────────────────────────────────────────────────────────
+
+const DB_TABLES = {
+  exchange_rates: { label: "Tipos de cambio", iconName: "dollar-sign",  query: "SELECT * FROM exchange_rates ORDER BY date DESC LIMIT 500",                       count: "SELECT COUNT(*) AS n FROM exchange_rates" },
+  benchmarks:     { label: "Benchmarks",      iconName: "bar-chart-3",  query: "SELECT * FROM benchmarks ORDER BY month DESC LIMIT 200",                          count: "SELECT COUNT(*) AS n FROM benchmarks" },
+  market_daily:   { label: "Datos diarios",   iconName: "trending-up",  query: "SELECT * FROM market_daily ORDER BY date DESC, symbol ASC LIMIT 500",             count: "SELECT COUNT(*) AS n FROM market_daily" },
+  meta:           { label: "Meta",            iconName: "info",         query: "SELECT * FROM meta",                                                               count: "SELECT COUNT(*) AS n FROM meta" },
+};
+
+function fmtDbCell(col, value) {
+  if (value === null || value === undefined) return "—";
+  if (typeof value === "number") {
+    const pctCols = ["plazo_fijo_tna", "inflacion_ar", "inflacion_us", "uva", "dolar_mep", "spy", "tlt", "ief"];
+    if (pctCols.includes(col)) return value.toFixed(4) + " %";
+    return value.toLocaleString("es-AR", { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+  }
+  return String(value);
+}
+
+function isNumericCol(col) {
+  return ["ars_per_usd", "compra", "venta", "valor", "plazo_fijo_tna", "inflacion_ar",
+          "inflacion_us", "uva", "dolar_mep", "spy", "tlt", "ief"].includes(col);
+}
+
+function renderDbExplorer() {
+  if (!state.db && !state.dbLoading) {
+    state.dbLoading = true;
+    loadMarketDb()
+      .then((db) => { state.db = db; state.dbLoading = false; render(); })
+      .catch((e) => {
+        state.dbLoading = false;
+        setNotice("error", "No se pudo cargar la base de datos: " + e.message);
+        state.screen = "final";
+        render();
+      });
+  }
+
+  if (state.dbLoading || !state.db) {
+    renderLayout(`
+      <div class="panel">
+        <div class="panel-head"><div>
+          <h2 class="panel-title">Explorador de datos</h2>
+          <p class="panel-subtitle">Leyendo SQLite...</p>
+        </div></div>
+        <div class="notice">${icon("loader-circle", 18)}<span>Cargando base de datos de mercado.</span></div>
+      </div>
+    `);
+    return;
+  }
+
+  const db   = state.db;
+  const tkey = state.dbTable in DB_TABLES ? state.dbTable : "exchange_rates";
+  const cfg  = DB_TABLES[tkey];
+
+  const rows  = queryMarketRows(db, cfg.query);
+  const total = (queryMarketRows(db, cfg.count)[0]?.n ?? 0);
+  const cols  = rows.length ? Object.keys(rows[0]) : [];
+
+  renderLayout(`
+    <div class="panel wide-panel">
+      <div class="panel-head">
+        <div>
+          <h2 class="panel-title">Explorador de datos</h2>
+          <p class="panel-subtitle">Tablas del SQLite cargado en el browser. Solo lectura.</p>
+        </div>
+        ${state.result?.db_generated_at ? `<span class="db-freshness">${icon("database", 13)}Datos al ${escapeHtml(fmtDbGeneratedAt(state.result.db_generated_at) || "")}</span>` : ""}
+      </div>
+
+      <div class="segment-control db-table-tabs" role="tablist" aria-label="Tabla">
+        ${Object.entries(DB_TABLES).map(([key, t]) => `
+          <button type="button" class="${tkey === key ? "active" : ""}" data-db-table="${key}" role="tab">
+            ${icon(t.iconName, 14)}${escapeHtml(t.label)}
+          </button>
+        `).join("")}
+      </div>
+
+      <p class="db-table-meta muted">
+        ${total} fila${total !== 1 ? "s" : ""} en total${rows.length < total ? ` · mostrando las ${rows.length} más recientes` : ""}
+      </p>
+
+      ${rows.length ? `
+        <div class="table-wrap">
+          <table class="table db-explorer-table">
+            <thead>
+              <tr>${cols.map((c) => `<th class="${isNumericCol(c) ? "num" : ""}">${escapeHtml(c)}</th>`).join("")}</tr>
+            </thead>
+            <tbody>
+              ${rows.map((row) => `
+                <tr>${cols.map((c) => `<td class="${isNumericCol(c) ? "num" : ""}">${escapeHtml(fmtDbCell(c, row[c]))}</td>`).join("")}</tr>
+              `).join("")}
+            </tbody>
+          </table>
+        </div>
+      ` : `<p class="muted">Sin datos en esta tabla.</p>`}
+
+      <div class="actions" style="margin-top:28px">
+        <button class="btn btn-secondary" data-action="back-to-results">${icon("arrow-left", 16)}Volver a resultados</button>
+      </div>
+    </div>
+  `, {
+    afterRender() {
+      document.querySelectorAll("[data-db-table]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          state.dbTable = btn.dataset.dbTable;
+          render();
+        });
+      });
+      $("[data-action='back-to-results']").addEventListener("click", () => {
+        state.screen = "final";
+        render();
+      });
+    }
+  });
+}
+
 function render() {
   if (state.screen === "start") return renderStart();
   if (state.screen === "open-existing") return renderOpenExisting();
@@ -2209,6 +2336,7 @@ function render() {
   if (state.screen === "movements") return renderMovements();
   if (state.screen === "snapshots") return renderSnapshots();
   if (state.screen === "final") return renderFinal();
+  if (state.screen === "db-explorer") return renderDbExplorer();
 }
 
 function renderBoot() {

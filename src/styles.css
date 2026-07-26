@@ -589,6 +589,34 @@ button {
   background: transparent;
 }
 
+.db-explorer-btn {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 20px;
+  font-size: 13px;
+}
+.db-explorer-btn:hover { color: var(--blue); }
+
+.db-table-tabs {
+  margin-bottom: 8px;
+}
+.db-table-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.db-table-meta {
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+
+.db-explorer-table {
+  min-width: 600px;
+  font-size: 13px;
+}
+
 .btn-danger {
   color: var(--red);
   border-color: #fecaca;

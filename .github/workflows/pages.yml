@@ -5,6 +5,13 @@ on:
     branches:
       - main
   workflow_dispatch:
+  workflow_run:
+    workflows:
+      - "Daily data update"
+    types:
+      - completed
+    branches:
+      - main
 
 permissions:
   contents: read

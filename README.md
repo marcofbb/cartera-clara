@@ -7,6 +7,8 @@ Cartera Clara es una aplicacion web estatica para medir el rendimiento de una ca
 
 Con esos datos calcula resultados en ARS y USD MEP, compara contra benchmarks y deja todo funcionando en el navegador, sin backend propio.
 
+![Pantalla de resultados](docs/demo-results.png)
+
 ## Que hace
 
 - Importa movimientos desde archivos XLSX mediante plugins de broker.

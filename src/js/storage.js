@@ -19,7 +19,8 @@ export function normalizePortfolio(saved) {
     updated_at: saved.updated_at || new Date().toISOString(),
     movements: cleanMovements(Array.isArray(saved.movements) ? saved.movements : []),
     snapshots: Array.isArray(saved.snapshots) ? saved.snapshots.map(normalizeSnapshot) : [],
-    benchmarks: ["dolar_mep", "plazo_fijo", "uva", "spy", "tlt", "ief"]
+    benchmarks: ["dolar_mep", "plazo_fijo", "uva", "spy", "tlt", "ief"],
+    movement_lock_date: saved.movement_lock_date || null
   };
 }
 

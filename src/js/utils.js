@@ -166,12 +166,11 @@ export function validateMovements(movements) {
 export function buildSnapshotDefaults(movements) {
   const clean = cleanMovements(movements);
   const allDates = clean.map((movement) => movement.date);
-  const incomeDates = clean.filter((movement) => movement.tipo === "ingreso").map((movement) => movement.date);
-  const firstIncome = minDate(incomeDates) || minDate(allDates);
+  const firstMovement = minDate(allDates);
   const lastFlow = maxDate(allDates);
-  if (!firstIncome || !lastFlow) return [];
+  if (!firstMovement || !lastFlow) return [];
 
-  const startDate = addDays(firstIncome, -1);
+  const startDate = addDays(firstMovement, -1);
   const startYear = Number(startDate.slice(0, 4));
   const finalYear = Number(lastFlow.slice(0, 4));
   const rows = [{

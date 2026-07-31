@@ -80,7 +80,8 @@ const state = {
   pluginFiles: [],
   db: null,
   dbLoading: false,
-  dbTable: "exchange_rates"
+  dbTable: "exchange_rates",
+  showLockedMovements: false
 };
 
 function pluginRegistry() {
@@ -337,6 +338,27 @@ function setModalError(message) {
 }
 
 function renderStepper(current) {
+  if (activePortfolio() && !state.draft) {
+    const NAV_TABS = [
+      [0, "Inicio"],
+      [2, "Movimientos"],
+      [3, "Snapshots"],
+      [4, "Resultados"],
+    ];
+    return `
+      <nav class="portfolio-nav" aria-label="Navegación">
+        ${NAV_TABS.map(([index, label]) => {
+          const active = index === current;
+          const target = stepTarget(index);
+          return `
+            <button class="nav-tab ${active ? "active" : ""}" data-step="${index}" ${target ? "" : "disabled"}>
+              ${label}
+            </button>
+          `;
+        }).join("")}
+      </nav>
+    `;
+  }
   return `
     <nav class="stepper" aria-label="Progreso">
       ${STEPS.map(([, label], index) => {
@@ -402,6 +424,38 @@ function bindGlobalActions() {
   });
 }
 
+async function loadDemo() {
+  try {
+    const res = await fetch("example.json");
+    if (!res.ok) throw new Error("No se pudo cargar la cartera de ejemplo.");
+    const data = await res.json();
+    const incoming = Array.isArray(data.portfolios) ? data.portfolios : [data];
+    const demos = incoming.map((p) => normalizePortfolio({
+      ...p,
+      id: makeId(),
+      source_type: "manual_csv",
+      source_label: "Demo",
+      broker: "Demo",
+      import_locked: true,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    })).filter(Boolean);
+    if (!demos.length) throw new Error("El archivo de demo está vacío.");
+    const demo = demos.find((p) => p.movements.length > 50) || demos[0];
+    const existing = state.portfolios.filter((p) => p.source_label !== "Demo");
+    state.portfolios = savePortfolios([demo, ...existing], demo.id);
+    state.activeId = demo.id;
+    state.draft = null;
+    state.screen = "final";
+    state.notice = null;
+    invalidateResults();
+    render();
+  } catch (err) {
+    setNotice("error", err.message || "No se pudo cargar la demo.");
+    render();
+  }
+}
+
 function renderStart() {
   renderLayout(`
     <div class="hero">
@@ -419,6 +473,12 @@ function renderStart() {
           <h2>Abrir cartera guardada</h2>
           <p>Retomá una cartera existente, agregá nuevos snapshots de valor y actualizá los resultados.</p>
         </button>
+      </div>
+      <div class="demo-row">
+        <button class="btn-demo" data-action="load-demo">
+          ${icon("play-circle", 16)}Ver cartera de ejemplo
+        </button>
+        <span class="demo-hint">Sin datos reales — para explorar cómo funciona</span>
       </div>
     </div>
   `, {
@@ -438,6 +498,7 @@ function renderStart() {
         state.notice = null;
         render();
       });
+      $("[data-action='load-demo']").addEventListener("click", () => loadDemo());
     }
   });
 }
@@ -893,8 +954,53 @@ async function importMovements() {
 function renderMovements() {
   const portfolio = activePortfolio();
   if (!portfolio) return renderStart();
-  const rows = portfolio.movements.map((movement) => movementRow(movement)).join("");
-  const totals = movementTotals(portfolio.movements);
+  const lockDate = portfolio.movement_lock_date || null;
+  const allMovements = portfolio.movements;
+  const lockedMovements = lockDate ? allMovements.filter((m) => m.date <= lockDate) : [];
+  const editableMovements = lockDate ? allMovements.filter((m) => m.date > lockDate) : allMovements;
+  const showLocked = state.showLockedMovements;
+  const editableRows = editableMovements.map((m) => movementRow(m)).join("");
+  const lockedRows = lockedMovements.map((m) => lockedMovementRow(m)).join("");
+  const totals = movementTotals(allMovements);
+  const lastEditableDate = maxDate(editableMovements.map((m) => m.date));
+  const extendAction = lockDate && editableMovements.length > 0 ? `
+    <span class="lock-divider">·</span>
+    <span class="lock-new-badge">${editableMovements.length} nuevo${editableMovements.length > 1 ? "s" : ""}</span>
+    <button class="btn btn-ghost btn-sm" data-action="lock-all">Extender al ${fmtDate(lastEditableDate)}${icon("arrow-right", 13)}</button>
+  ` : "";
+  const quickLockAction = !lockDate && editableMovements.length > 0 ? `
+    <button class="btn btn-ghost btn-sm" data-action="lock-all">${icon("lock", 13)}Bloquear al ${fmtDate(lastEditableDate)}</button>
+  ` : "";
+  const lockSection = `
+    <div class="lock-section">
+      <div class="lock-controls">
+        <span class="lock-label">${icon("lock", 14)}${lockDate ? "Bloqueado hasta" : "Proteger hasta"}<span class="lock-tooltip" data-tooltip="Protege los movimientos hasta esta fecha: no se pueden agregar movimientos en ese período. Siguen usándose en los cálculos.">${icon("circle-help", 14)}</span></span>
+        <input class="input input-sm" type="date" id="lockDateInput" value="${escapeHtml(lockDate || "")}">
+        <button class="btn btn-secondary btn-sm" data-action="set-lock">Aplicar</button>
+        ${lockDate ? `<button class="btn btn-ghost btn-sm" data-action="remove-lock">Quitar bloqueo</button>` : ""}
+        ${extendAction}
+        ${quickLockAction}
+      </div>
+    </div>
+  `;
+  const lockedSection = lockDate ? `
+    <div>
+      <div class="edit-table-head">
+        <div class="edit-table-title locked-title">${icon("lock", 16)}Movimientos bloqueados hasta ${fmtDate(lockDate)}</div>
+        <button class="btn btn-ghost btn-sm" data-action="toggle-locked">
+          ${showLocked ? `${icon("eye-off", 13)}Ocultar` : `${icon("eye", 13)}Ver (${lockedMovements.length})`}
+        </button>
+      </div>
+      <div class="${showLocked ? "" : "locked-rows-hidden"}">
+        <div class="locked-movements-list">
+          <div class="locked-movement-header">
+            <span>Fecha</span><span>Tipo</span><span>Moneda</span><span>Monto</span><span></span>
+          </div>
+          ${lockedRows || '<div class="locked-movement-empty muted">Sin movimientos bloqueados.</div>'}
+        </div>
+      </div>
+    </div>
+  ` : "";
   renderLayout(`
     <div class="panel wide-panel">
       <div class="panel-head">
@@ -902,22 +1008,27 @@ function renderMovements() {
           <h2 class="panel-title">Editar movimientos</h2>
           <p class="panel-subtitle">La importación inicial está cerrada. Desde ahora solo editás o agregás movimientos manualmente.</p>
         </div>
-        <button class="btn btn-secondary" data-action="add-movement">${icon("plus", 16)}Agregar movimiento</button>
+        <div class="btn-group">
+          <button class="btn btn-secondary" data-action="add-movement">${icon("plus", 16)}Agregar movimiento</button>
+          <button class="btn btn-ghost" data-action="add-bulk">${icon("table-2", 16)}Agregar bulk</button>
+        </div>
       </div>
+      ${lockSection}
       <div class="metric-grid movement-metrics">
-        <div class="metric-card"><div class="metric-label">Movimientos</div><div class="metric-value">${portfolio.movements.length}</div></div>
+        <div class="metric-card"><div class="metric-label">Movimientos</div><div class="metric-value">${allMovements.length}</div></div>
         <div class="metric-card"><div class="metric-label">Ingresos en ARS</div><div class="metric-value pos">${fmtMoney(totals.ingreso.ARS, "ARS")}</div></div>
         <div class="metric-card"><div class="metric-label">Ingresos en USD</div><div class="metric-value pos">${fmtMoney(totals.ingreso.USD, "USD")}</div></div>
         <div class="metric-card"><div class="metric-label">Retiros en ARS</div><div class="metric-value neg">${fmtMoney(totals.retiro.ARS, "ARS")}</div></div>
         <div class="metric-card"><div class="metric-label">Retiros en USD</div><div class="metric-value neg">${fmtMoney(totals.retiro.USD, "USD")}</div></div>
       </div>
+      ${lockedSection}
       <div class="edit-table-head">
         <div class="edit-table-title">${icon("pencil-line", 16)}Movimientos editables</div>
       </div>
       <div class="table-wrap editable-table-wrap">
         <table class="table editable-table">
           <thead><tr><th>Fecha</th><th>Tipo</th><th>Moneda</th><th class="num">Monto</th><th class="num">Acciones</th></tr></thead>
-          <tbody>${rows || '<tr><td colspan="5" class="muted">Sin movimientos.</td></tr>'}</tbody>
+          <tbody>${editableRows || '<tr><td colspan="5" class="muted">Sin movimientos editables.</td></tr>'}</tbody>
         </table>
       </div>
       <div class="actions">
@@ -954,6 +1065,19 @@ function movementRow(movement) {
   `;
 }
 
+function lockedMovementRow(movement) {
+  const tipoLabel = movement.tipo === "ingreso" ? "Ingreso" : "Retiro";
+  return `
+    <div class="locked-movement-item">
+      <div class="locked-cell">${icon("calendar-days", 14)}<span>${fmtDate(movement.date)}</span></div>
+      <div class="locked-cell">${icon("arrow-left-right", 14)}<span>${tipoLabel}</span></div>
+      <div class="locked-cell">${icon("badge-dollar-sign", 14)}<span>${movement.moneda}</span></div>
+      <div class="locked-cell locked-cell-num">${icon("coins", 14)}<span>${fmtMoney(Number(movement.monto), movement.moneda)}</span></div>
+      <div class="locked-cell locked-cell-icon">${icon("lock", 14)}</div>
+    </div>
+  `;
+}
+
 function readMovementEditor() {
   return Array.from(document.querySelectorAll("[data-movement]")).map((row, index) => normalizeMovement({
     id: row.dataset.movement || makeId(`mov-${index}`),
@@ -964,33 +1088,78 @@ function readMovementEditor() {
   }));
 }
 
+function lockedMovementsOf(portfolio) {
+  const lockDate = portfolio.movement_lock_date || null;
+  return lockDate ? portfolio.movements.filter((m) => m.date <= lockDate) : [];
+}
+
 function bindMovementEditor() {
+  const portfolio = activePortfolio();
+
   $("[data-action='back-start']").addEventListener("click", () => {
     state.screen = "start";
     render();
   });
+
   $("[data-action='add-movement']").addEventListener("click", () => {
     openMovementModal();
   });
+
+  $("[data-action='add-bulk']").addEventListener("click", () => {
+    openBulkMovementModal();
+  });
+
+  $("[data-action='set-lock']")?.addEventListener("click", () => {
+    const date = $("#lockDateInput").value;
+    if (!date) { setNotice("error", "Ingresá una fecha de bloqueo."); return; }
+    portfolio.movement_lock_date = date;
+    state.showLockedMovements = false;
+    persistActive();
+    renderMovements();
+  });
+
+  $("[data-action='lock-all']")?.addEventListener("click", () => {
+    const lastDate = maxDate(portfolio.movements.map((m) => m.date));
+    if (!lastDate) return;
+    portfolio.movement_lock_date = lastDate;
+    state.showLockedMovements = false;
+    persistActive();
+    renderMovements();
+  });
+
+  $("[data-action='remove-lock']")?.addEventListener("click", () => {
+    portfolio.movement_lock_date = null;
+    state.showLockedMovements = false;
+    persistActive();
+    renderMovements();
+  });
+
+  $("[data-action='toggle-locked']")?.addEventListener("click", () => {
+    state.showLockedMovements = !state.showLockedMovements;
+    renderMovements();
+  });
+
   document.querySelectorAll("[data-action='remove-movement']").forEach((button) => {
     button.addEventListener("click", () => {
-      const portfolio = activePortfolio();
       const row = button.closest("[data-movement]");
-      portfolio.movements = readMovementEditor().filter((movement) => movement.id !== row.dataset.movement);
+      const locked = lockedMovementsOf(portfolio);
+      portfolio.movements = [...locked, ...readMovementEditor().filter((m) => m.id !== row.dataset.movement)];
       persistActive();
       renderMovements();
     });
   });
+
   $("[data-action='continue']").addEventListener("click", () => {
-    const portfolio = activePortfolio();
-    portfolio.movements = readMovementEditor();
-    const errors = validateMovements(portfolio.movements);
+    const locked = lockedMovementsOf(portfolio);
+    const editable = readMovementEditor();
+    const combined = [...locked, ...editable];
+    const errors = validateMovements(combined);
     if (errors.length) {
       setNotice("error", errors[0]);
       renderMovements();
       return;
     }
-    portfolio.movements = cleanMovements(portfolio.movements);
+    portfolio.movements = cleanMovements(combined);
     if (!portfolio.snapshots.length || !portfolio.snapshots.some((snapshot) => String(snapshot.amount).trim())) {
       portfolio.snapshots = buildSnapshotDefaults(portfolio.movements);
     }
@@ -1058,10 +1227,79 @@ function openMovementModal() {
         setModalError(errors[0]);
         return;
       }
-      portfolio.movements = readMovementEditor();
+      const lockDate = portfolio.movement_lock_date;
+      if (lockDate && row.date <= lockDate) {
+        setModalError(`La fecha ${fmtDate(row.date)} está bloqueada hasta ${fmtDate(lockDate)}. No podés agregar movimientos en ese período.`);
+        return;
+      }
+      const locked = lockedMovementsOf(portfolio);
+      portfolio.movements = [...locked, ...readMovementEditor()];
       portfolio.movements.push(cleanMovements([row])[0]);
       invalidateResults();
       setNotice("success", "Movimiento agregado. Revisá la tabla y guardá para continuar.");
+      closeModal();
+      renderMovements();
+    });
+  });
+}
+
+function parseBulkCsv(text) {
+  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  const rows = [];
+  const errors = [];
+  lines.forEach((line, idx) => {
+    if (idx === 0 && /fecha|date/i.test(line.split(",")[0])) return;
+    const parts = line.split(",").map((p) => p.trim());
+    if (parts.length < 4) { errors.push(`Línea ${idx + 1}: faltan columnas (se esperan fecha,tipo,moneda,monto).`); return; }
+    rows.push({ date: parts[0], tipo: parts[1].toLowerCase(), moneda: parts[2].toUpperCase(), monto: parts[3], _line: idx + 1 });
+  });
+  return { rows, parseErrors: errors };
+}
+
+function openBulkMovementModal() {
+  const portfolio = activePortfolio();
+  const lockDate = portfolio.movement_lock_date || null;
+  const lockNote = lockDate ? `<p class="muted" style="margin-top:8px">Los movimientos con fecha ≤ ${fmtDate(lockDate)} serán rechazados.</p>` : "";
+  showModal(`
+    <form class="modal-form" id="bulkModalForm">
+      <div class="modal-head">
+        <div>
+          <h2>Agregar movimientos bulk</h2>
+          <p>Pegá las filas en formato CSV: <code>fecha,tipo,moneda,monto</code>. La primera fila puede ser encabezado.</p>
+          ${lockNote}
+        </div>
+        <button type="button" class="icon-btn" data-action="close-modal">${icon("x", 16)}</button>
+      </div>
+      <label class="field">
+        <span class="label">CSV</span>
+        <textarea class="input textarea-bulk" id="bulkCsvInput" rows="8" placeholder="fecha,tipo,moneda,monto&#10;2025-01-10,ingreso,ARS,100000&#10;2025-02-15,retiro,USD,500" required></textarea>
+      </label>
+      <div class="modal-error" hidden></div>
+      <div class="actions">
+        <button type="button" class="btn btn-secondary" data-action="close-modal">Cancelar</button>
+        <button type="submit" class="btn btn-primary">Agregar movimientos${icon("check", 16)}</button>
+      </div>
+    </form>
+  `, () => {
+    $("#bulkModalForm").addEventListener("submit", (event) => {
+      event.preventDefault();
+      const text = $("#bulkCsvInput").value;
+      const { rows, parseErrors } = parseBulkCsv(text);
+      if (parseErrors.length) { setModalError(parseErrors[0]); return; }
+      if (!rows.length) { setModalError("No se encontraron filas válidas."); return; }
+      const blockedRows = lockDate ? rows.filter((r) => r.date <= lockDate) : [];
+      if (blockedRows.length) {
+        const sample = blockedRows.slice(0, 3).map((r) => `${fmtDate(r.date)}`).join(", ");
+        setModalError(`${blockedRows.length} movimiento(s) tienen fecha bloqueada (hasta ${fmtDate(lockDate)}): ${sample}. Corregí las fechas o quitá el bloqueo.`);
+        return;
+      }
+      const normalized = rows.map((r) => normalizeMovement({ id: makeId("mov"), date: r.date, tipo: r.tipo, moneda: r.moneda, monto: r.monto }));
+      const validationErrors = validateMovements(normalized);
+      if (validationErrors.length) { setModalError(validationErrors[0]); return; }
+      const locked = lockedMovementsOf(portfolio);
+      portfolio.movements = cleanMovements([...locked, ...readMovementEditor(), ...normalized]);
+      invalidateResults();
+      setNotice("success", `${normalized.length} movimiento(s) agregados. Revisá la tabla y guardá para continuar.`);
       closeModal();
       renderMovements();
     });

@@ -54,6 +54,90 @@ export function marketRateAt(db, date, warnings = []) {
   return rateAt(db, date, warnings);
 }
 
+function spyPriceAt(db, date) {
+  const rows = queryRows(
+    db,
+    "SELECT valor FROM market_daily WHERE symbol='spy' AND date <= ? AND valor IS NOT NULL ORDER BY date DESC LIMIT 1",
+    [date]
+  );
+  const val = rows.length ? Number(rows[0].valor) : NaN;
+  return Number.isFinite(val) && val > 0 ? val : null;
+}
+
+function computeSpyCashflowDetail(db, result, movements, warnings) {
+  if (!result) return null;
+  const startSnap = { date: result.bmv_date, timing: result.bmv_timing || "end_day" };
+  const endSnap = { date: result.emv_date, timing: result.emv_timing || "end_day" };
+
+  const priceStart = spyPriceAt(db, result.bmv_date);
+  const priceEnd = spyPriceAt(db, result.emv_date);
+  if (!priceStart || !priceEnd) return null;
+
+  const steps = [];
+  let shares = result.bmv / priceStart;
+  steps.push({
+    date: result.bmv_date,
+    type: "inicial",
+    amount_usd: result.bmv,
+    price: priceStart,
+    shares_delta: shares,
+    shares_running: shares
+  });
+
+  let failed = false;
+  movementsBetween(movements, startSnap, endSnap).forEach((movement) => {
+    if (failed) return;
+    const price = spyPriceAt(db, movement.date);
+    const conv = conversionForDisplay(db, Number(movement.monto), movement.moneda, movement.date, "USD", warnings);
+    if (!price || !conv) { failed = true; return; }
+    let delta;
+    if (movement.tipo === "ingreso") {
+      delta = conv.amount / price;
+      shares += delta;
+    } else {
+      delta = -Math.min(conv.amount / price, shares);
+      shares = Math.max(0, shares + delta);
+    }
+    steps.push({
+      date: movement.date,
+      type: movement.tipo,
+      amount_usd: conv.amount,
+      amount_original: conv.source_amount,
+      currency_original: conv.source_currency,
+      rate: conv.converted ? conv.rate : null,
+      price,
+      shares_delta: delta,
+      shares_running: shares
+    });
+  });
+
+  if (failed) return null;
+
+  const emv = shares * priceEnd;
+  steps.push({
+    date: result.emv_date,
+    type: "final",
+    price: priceEnd,
+    shares_running: shares,
+    amount_usd: emv
+  });
+
+  return {
+    emv,
+    detail: {
+      method: "spy_cashflow",
+      bmv_date: result.bmv_date,
+      emv_date: result.emv_date,
+      price_start: priceStart,
+      price_end: priceEnd,
+      initial_shares: result.bmv / priceStart,
+      final_shares: shares,
+      emv_spy: emv,
+      steps
+    }
+  };
+}
+
 function toDisplay(db, amount, currency, date, display, warnings) {
   const conversion = conversionForDisplay(db, amount, currency, date, display, warnings);
   return conversion ? conversion.amount : null;
@@ -424,6 +508,42 @@ export async function calculatePortfolio(portfolio) {
   const start = portfolio.benchmark_start || snapshots[0]?.date || "";
   const end = portfolio.benchmark_end || snapshots[snapshots.length - 1]?.date || "";
   const benchmarks = start && end ? benchmarkReturns(db, start, end, warnings) : [];
+
+  // SPY equivalent benchmark: simulate buying SPY with the same cash flows
+  const spyCfResult = results.USD ? computeSpyCashflowDetail(db, results.USD, movements, warnings) : null;
+  if (spyCfResult !== null && results.USD) {
+    const { emv: spyEMV, detail: spyDetail } = spyCfResult;
+    const startSnap = { date: results.USD.bmv_date, timing: results.USD.bmv_timing || "end_day" };
+    const endSnap = { date: results.USD.emv_date, timing: results.USD.emv_timing || "end_day" };
+    const spyFlows = [];
+    if (results.USD.bmv !== 0) spyFlows.push({ date: results.USD.bmv_date, amount: -results.USD.bmv });
+    let flowFailed = false;
+    movementsBetween(movements, startSnap, endSnap).forEach((movement) => {
+      const conv = conversionForDisplay(db, Number(movement.monto), movement.moneda, movement.date, "USD", warnings);
+      if (!conv) { flowFailed = true; return; }
+      spyFlows.push({ date: movement.date, amount: movement.tipo === "ingreso" ? -conv.amount : conv.amount });
+    });
+    if (!flowFailed) {
+      if (spyEMV !== 0) spyFlows.push({ date: results.USD.emv_date, amount: spyEMV });
+      const sorted = spyFlows.sort((a, b) => a.date.localeCompare(b.date));
+      if (sorted.some((f) => f.amount > 0) && sorted.some((f) => f.amount < 0)) {
+        const spyAnnual = xirr(sorted);
+        if (spyAnnual !== null) {
+          const days = daysBetween(sorted[0].date, sorted[sorted.length - 1].date);
+          const spyPeriod = days > 0 ? Math.pow(1 + spyAnnual, days / 365) - 1 : null;
+          if (spyPeriod !== null) {
+            spyDetail.xirr_annual = spyAnnual;
+            spyDetail.xirr_period = spyPeriod;
+            spyDetail.xirr_days = days;
+            const spyIdx = benchmarks.findIndex((b) => b.id === "spy");
+            const spyCf = { id: "spy_cf", label: "SPY (con tus flujos)", group: "USD", return: spyPeriod, source: "daily_prices", detail: spyDetail };
+            if (spyIdx >= 0) benchmarks.splice(spyIdx + 1, 0, spyCf);
+            else benchmarks.push(spyCf);
+          }
+        }
+      }
+    }
+  }
 
   const metaRows = queryRows(db, "SELECT key, value FROM meta");
   const dbMeta = Object.fromEntries(metaRows.map((r) => [r.key, r.value]));

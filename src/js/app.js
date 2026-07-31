@@ -2308,6 +2308,10 @@ function benchmarkResultBreakdown(item) {
     `;
   }
 
+  if (detail.method === "spy_cashflow") {
+    return spyCashflowBreakdown(item, detail);
+  }
+
   const periods = detail.periods || [];
   const methodText = detail.method === "tna_prorated"
     ? "Se toma la TNA mensual publicada, se prorratea por los días activos del mes y se acumula multiplicando cada factor."
@@ -2331,6 +2335,67 @@ function benchmarkResultBreakdown(item) {
           </div>
         </details>
       ` : ""}
+    </div>
+  `;
+}
+
+function spyCashflowBreakdown(item, detail) {
+  const steps = detail.steps || [];
+  const movSteps = steps.filter((s) => s.type === "ingreso" || s.type === "retiro");
+  const initialStep = steps.find((s) => s.type === "inicial");
+  const finalStep = steps.find((s) => s.type === "final");
+
+  const stepRows = steps.map((step) => {
+    const isInitial = step.type === "inicial";
+    const isFinal = step.type === "final";
+    const typeLabel = isInitial ? "Inicio" : isFinal ? "Cierre" : step.type === "ingreso" ? "Ingreso" : "Retiro";
+    const deltaSign = step.shares_delta >= 0 ? "+" : "";
+    const sharesCell = isFinal
+      ? `<td class="num">${fmtDecimal(step.shares_running, 4, 6)}</td>`
+      : `<td class="num ${step.shares_delta >= 0 ? "pos" : "neg"}">${deltaSign}${fmtDecimal(step.shares_delta, 4, 6)}</td>`;
+    const amountCell = isFinal
+      ? `<td class="num">${fmtMoney(step.amount_usd, "USD")}</td>`
+      : `<td class="num">${fmtMoney(step.amount_usd, "USD")}${step.rate ? `<small>TC ${fmtRate(step.rate)}</small>` : ""}</td>`;
+    return `
+      <tr>
+        <td>${fmtDate(step.date)} <small>${escapeHtml(typeLabel)}</small></td>
+        <td class="num">USD ${fmtDecimal(step.price, 2, 2)}</td>
+        ${amountCell}
+        ${sharesCell}
+        <td class="num">${fmtDecimal(step.shares_running, 4, 6)}</td>
+      </tr>
+    `;
+  }).join("");
+
+  return `
+    <div class="benchmark-method">
+      <span>Simula comprar y vender SPY con exactamente los mismos movimientos de tu cartera, al precio del día de cada operación.</span>
+      <span>
+        Inicio ${fmtDate(detail.bmv_date)}: USD ${fmtDecimal(detail.initial_shares, 4, 6)} acciones
+        (${fmtMoney(initialStep?.amount_usd, "USD")} ÷ USD ${fmtDecimal(detail.price_start, 2, 2)}).
+        ${movSteps.length ? `${movSteps.length} movimiento(s) intermedio(s).` : "Sin movimientos intermedios."}
+      </span>
+      <span>
+        Cierre ${fmtDate(detail.emv_date)}: ${fmtDecimal(detail.final_shares, 4, 6)} acciones × USD ${fmtDecimal(detail.price_end, 2, 2)} = ${fmtMoney(detail.emv_spy, "USD")}.
+      </span>
+      <span>XIRR = ${fmtPct(detail.xirr_annual)} anual → (1 + ${fmtPct(detail.xirr_annual, false)}) ^ (${detail.xirr_days} / 365) - 1 = ${fmtPct(item.return)} en el período.</span>
+      <details class="benchmark-detail">
+        <summary>Ver tabla de operaciones (${steps.length})</summary>
+        <div class="calc-table-wrap compact">
+          <table class="calc-table benchmark-period-table">
+            <thead>
+              <tr>
+                <th>Fecha / Tipo</th>
+                <th class="num">Precio SPY</th>
+                <th class="num">Monto USD</th>
+                <th class="num">Acciones Δ / total</th>
+                <th class="num">Acciones acum.</th>
+              </tr>
+            </thead>
+            <tbody>${stepRows}</tbody>
+          </table>
+        </div>
+      </details>
     </div>
   `;
 }
@@ -2421,6 +2486,7 @@ function fmtDbGeneratedAt(isoString) {
 function benchmarkSourceLabel(item) {
   if (item.id === "dolar_mep" && item.source === "exchange_rates") return "Variación del tipo de cambio MEP diario";
   if (item.id === "plazo_fijo") return "TNA mensual prorrateada por días";
+  if (item.source === "daily_prices") return "Simulación con precios diarios de SPY";
   return "Rendimiento mensual ponderado por días activos";
 }
 

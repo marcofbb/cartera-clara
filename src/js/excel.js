@@ -98,7 +98,7 @@ function buildResumenSheet(portfolio, periods) {
   });
 
   if (!periods.length) {
-    rows.push([], [s("Sin resultados anuales", STYLE.label), s("Cargá snapshots suficientes para calcular años o YTD.")]);
+    rows.push([], [s("Sin resultados anuales", STYLE.label), s("Cargá snapshots suficientes para calcular años completos.")]);
   }
 
   return {
@@ -350,26 +350,6 @@ function annualAndYtdPeriods(portfolio) {
       benchmarkEnd: `${year}-12-31`
     });
   });
-
-  if (!periods.some((period) => period.year === currentYear)) {
-    const ytdStartContext = startContextForYear(snapshots, currentYear);
-    const ytdStart = ytdStartContext?.snapshot || null;
-    const ytdEnd = latestSnapshotUntilToday(snapshots);
-    if (ytdStart && ytdEnd && snapshotCompare(ytdStart, ytdEnd) < 0) {
-      periods.push({
-        mode: "ytd",
-        year: currentYear,
-        label: `YTD ${currentYear}${ytdStartContext.partial ? " (parcial)" : ""}`,
-        from: ytdStart.date,
-        fromTiming: ytdStart.timing,
-        to: ytdEnd.date,
-        toTiming: ytdEnd.timing,
-        toEffective: effectiveEndDate(ytdEnd),
-        benchmarkStart: ytdStartContext.benchmarkStart,
-        benchmarkEnd: effectiveEndDate(ytdEnd)
-      });
-    }
-  }
 
   return periods.sort((a, b) => a.year - b.year);
 }

@@ -1861,22 +1861,6 @@ function snapshotRangeOptions(portfolio) {
     ));
   });
 
-  const ytdStartContext = startContextForYear(snapshots, currentYear);
-  const ytdStart = ytdStartContext?.snapshot || null;
-  const ytdEnd = latestSnapshotUntilToday(snapshots);
-  const ytd = ytdStart && ytdEnd && snapshotCompare(ytdStart, ytdEnd) < 0
-    ? makePeriod(
-      "ytd",
-      `YTD ${currentYear}${ytdStartContext.partial ? " (parcial)" : ""}`,
-      `${fmtDate(ytdStart.date)} - ${fmtDate(ytdEnd.date)} · benchmark desde ${fmtDate(ytdStartContext.benchmarkStart)} hasta ${fmtDate(effectiveEndDate(ytdEnd))}`,
-      ytdStart,
-      ytdEnd,
-      ytdStartContext.benchmarkStart,
-      effectiveEndDate(ytdEnd),
-      { year: currentYear, endValue: "latest", partialStart: ytdStartContext.partial }
-    )
-    : null;
-
   const latest = latestSnapshotUntilToday(snapshots);
   const validRangeStartYears = Array.from(new Set(rangeStartYears)).filter((year) => {
     const startContext = startContextForYear(snapshots, year);
@@ -1887,7 +1871,7 @@ function snapshotRangeOptions(portfolio) {
     return hasClosedYear || hasLatest;
   }).sort((a, b) => a - b);
 
-  return { annual, ytd, rangeStartYears: validRangeStartYears, snapshots };
+  return { annual, rangeStartYears: validRangeStartYears, snapshots };
 }
 
 function rangeEndOptionsForStart(options, startYear) {
@@ -1939,21 +1923,18 @@ function rangePeriodForYears(options, startYear, endValue) {
 
 function ensureResultRange(portfolio) {
   const options = snapshotRangeOptions(portfolio);
-  if (!options.annual.length && !options.ytd && !options.rangeStartYears.length) {
+  if (!options.annual.length && !options.rangeStartYears.length) {
     state.resultRange = { mode: "year", from: "", to: "" };
     return state.resultRange;
   }
 
-  let mode = ["year", "ytd", "range"].includes(state.resultRange?.mode) ? state.resultRange.mode : "year";
-  if (mode === "year" && !options.annual.length) mode = options.ytd ? "ytd" : "range";
-  if (mode === "ytd" && !options.ytd) mode = options.annual.length ? "year" : "range";
-  if (mode === "range" && !options.rangeStartYears.length) mode = options.ytd ? "ytd" : "year";
+  let mode = ["year", "range"].includes(state.resultRange?.mode) ? state.resultRange.mode : "year";
+  if (mode === "year" && !options.annual.length) mode = "range";
+  if (mode === "range" && !options.rangeStartYears.length) mode = "year";
 
   let period = null;
   if (mode === "year") {
     period = options.annual.find((item) => item.year === state.resultRange?.year) || options.annual.at(-1);
-  } else if (mode === "ytd") {
-    period = options.ytd;
   } else {
     const startYear = options.rangeStartYears.includes(Number(state.resultRange?.startYear))
       ? Number(state.resultRange.startYear)
@@ -2046,7 +2027,7 @@ function renderFinal() {
         <div class="panel-head">
           <div>
             <h2 class="panel-title">Resultados</h2>
-            <p class="panel-subtitle">Para filtrar anual, YTD o por rango de años necesitás snapshots de inicio/cierre de año.</p>
+            <p class="panel-subtitle">Para filtrar por año o rango de años necesitás snapshots de inicio/cierre de año.</p>
           </div>
         </div>
         <div class="notice warn">${icon("calendar-clock", 18)}<span>Usá un snapshot de cierre del 31/12 o uno de inicio del 01/01. Un cierre del 31/12 sirve como inicio del año siguiente.</span></div>
@@ -2169,10 +2150,9 @@ function rangeControls(portfolio) {
     <div class="range-panel" data-range-mode="${escapeHtml(range.mode)}" data-range-from="${escapeHtml(range.from)}" data-range-to="${escapeHtml(range.to)}">
       <div>
         <div class="metric-label">Rango de cálculo</div>
-        <p class="muted">Filtrá por año calendario, YTD o rango de años. El benchmark termina en la fecha efectiva del último snapshot del período y los benchmarks mensuales se cortan en el último mes publicado.</p>
+        <p class="muted">Filtrá por año calendario o rango de años. El benchmark termina en la fecha efectiva del último snapshot del período y los benchmarks mensuales se cortan en el último mes publicado.</p>
         <div class="segment-control" role="tablist" aria-label="Modo de rango">
           <button type="button" class="${range.mode === "year" ? "active" : ""}" data-range-mode-option="year" ${options.annual.length ? "" : "disabled"}>Anual</button>
-          <button type="button" class="${range.mode === "ytd" ? "active" : ""}" data-range-mode-option="ytd" ${options.ytd ? "" : "disabled"}>YTD</button>
           <button type="button" class="${range.mode === "range" ? "active" : ""}" data-range-mode-option="range" ${options.rangeStartYears.length ? "" : "disabled"}>Rango</button>
         </div>
       </div>
@@ -2183,12 +2163,6 @@ function rangeControls(portfolio) {
             <select class="select" id="rangeYear">${annualOptions}</select>
             <span class="field-hint">${escapeHtml(range.detail || "")}</span>
           </label>
-        ` : ""}
-        ${range.mode === "ytd" ? `
-          <div class="range-summary">
-            <strong>${escapeHtml(range.label)}</strong>
-            <span>${escapeHtml(range.detail || "")}</span>
-          </div>
         ` : ""}
         ${range.mode === "range" ? `
           <label class="field">
@@ -2215,7 +2189,6 @@ function bindRangeControls() {
     button.addEventListener("click", () => {
       const mode = button.dataset.rangeModeOption;
       if (mode === "year") state.resultRange = { mode, year: options.annual.at(-1)?.year };
-      if (mode === "ytd") state.resultRange = { mode };
       if (mode === "range") state.resultRange = { mode, startYear: options.rangeStartYears[0], endValue: "latest" };
       invalidateResults();
       render();

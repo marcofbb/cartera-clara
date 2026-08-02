@@ -404,8 +404,8 @@
       id: "accountId",
       optionKey: "account_id",
       label: "ID de cuenta INVIU",
-      placeholder: "Opcional, ej: 161413",
-      hint: "Intentamos completarlo automáticamente desde el nombre del archivo. Ejemplo: inviu-movimientos-161413_... usa 161413. Si no se detecta, completalo manualmente.",
+      placeholder: "Opcional, ej: 100200",
+      hint: "Intentamos completarlo automáticamente desde el nombre del archivo. Ejemplo: inviu-movimientos-100200_... usa 100200. Si no se detecta, completalo manualmente.",
       fileNamePattern: "inviu-movimientos-(\\d+)",
       fileNameGroup: 1
     },

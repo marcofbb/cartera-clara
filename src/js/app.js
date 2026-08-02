@@ -1321,7 +1321,9 @@ function openBulkMovementModal() {
     $("#bulkDownloadTemplate").addEventListener("click", () => downloadCsvTemplate(lockDate));
     $("#bulkCopyAi").addEventListener("click", async (event) => {
       track("ai_prompt_copied");
-      await navigator.clipboard.writeText(AI_PROMPT);
+      const lockLine = lockDate ? `- Incluí solo movimientos con fecha estrictamente mayor a ${lockDate} (no incluyas esa fecha).\n` : "";
+      const prompt = AI_PROMPT.replace("Reglas obligatorias:\n", `Reglas obligatorias:\n${lockLine}`);
+      await navigator.clipboard.writeText(prompt);
       event.currentTarget.innerHTML = `${icon("check", 16)}Prompt copiado`;
       refreshIcons();
     });

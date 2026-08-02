@@ -369,6 +369,34 @@ button {
   color: var(--muted);
 }
 
+.onboarding-row {
+  display: flex;
+  justify-content: center;
+  margin-top: 12px;
+}
+
+.btn-onboarding {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 16px;
+  border-radius: 999px;
+  background: transparent;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  text-decoration: none;
+  transition: color .18s ease;
+}
+
+.btn-onboarding:hover {
+  color: var(--blue);
+}
+
+.btn-onboarding i {
+  color: inherit;
+}
+
 .panel {
   width: min(980px, 100%);
   margin: 0 auto;

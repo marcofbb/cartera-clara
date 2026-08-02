@@ -1,4 +1,5 @@
 import { parseManualCsv, downloadCsvTemplate } from "./csv.js";
+import { track } from "./analytics.js";
 import { calculatePortfolio, loadMarketDb, queryMarketRows } from "./calc.js";
 import {
   $, buildSnapshotDefaults, cleanMovements, daysBetween, escapeHtml, fmtDate, fmtMoney, fmtPct, fmtPp,
@@ -267,6 +268,7 @@ function createPortfolioFromImport(result) {
   state.portfolios = savePortfolios(state.portfolios, portfolio.id);
   state.activeId = portfolio.id;
   state.draft = null;
+  track("portfolio_created", { source_id: state.source, movement_count: movements.length });
   return portfolio;
 }
 
@@ -422,6 +424,7 @@ function bindGlobalActions() {
       render();
       return;
     }
+    track("backup_exported", { portfolio_count: state.portfolios.length });
     downloadJson(backupPortfolios(state.portfolios), `cartera-v4-backup-${todayIso()}.json`);
   });
 }
@@ -451,6 +454,7 @@ async function loadDemo() {
     state.screen = "final";
     state.notice = null;
     invalidateResults();
+    track("demo_loaded");
     render();
   } catch (err) {
     setNotice("error", err.message || "No se pudo cargar la demo.");
@@ -481,6 +485,11 @@ function renderStart() {
           ${icon("play-circle", 16)}Ver cartera de ejemplo
         </button>
         <span class="demo-hint">Sin datos reales — para explorar cómo funciona</span>
+      </div>
+      <div class="onboarding-row">
+        <a class="btn-onboarding" href="onboarding.html" target="_blank" rel="noopener">
+          ${icon("book-open", 16)}Cómo usar Cartera Clara paso a paso
+        </a>
       </div>
     </div>
   `, {
@@ -547,6 +556,7 @@ function renderOpenExisting() {
         state.resultRange = null;
         invalidateResults();
         state.screen = "final";
+        track("portfolio_opened", { source_id: activePortfolio()?.source_type || "unknown" });
         render();
       });
       $("[data-action='delete-selected']").addEventListener("click", () => {
@@ -562,6 +572,7 @@ function renderOpenExisting() {
           state.resultRange = null;
           invalidateResults();
           state.screen = "final";
+          track("backup_imported", { portfolio_count: imported.length });
           setNotice("success", `Backup importado: ${imported.length} cartera(s).`);
           render();
         } catch (error) {
@@ -596,6 +607,7 @@ function openDeletePortfolioModal(portfolioId) {
     </div>
   `, () => {
     $("[data-action='confirm-delete']").addEventListener("click", () => {
+      track("portfolio_deleted", { source_id: state.portfolios.find((p) => p.id === portfolioId)?.source_type || "unknown" });
       state.portfolios = state.portfolios.filter((item) => item.id !== portfolioId);
       const nextActive = state.activeId === portfolioId ? state.portfolios[0]?.id || "" : state.activeId;
       state.portfolios = savePortfolios(state.portfolios, nextActive);
@@ -677,6 +689,7 @@ function renderSource() {
           state.draft.source_type = state.source;
           state.draft.source_label = meta.label;
           state.draft.broker = meta.broker;
+          track("source_selected", { source_id: state.source, source_label: meta.label });
           document.querySelectorAll("[data-source]").forEach((item) => {
             item.classList.toggle("active", item.dataset.source === state.source);
           });
@@ -902,6 +915,7 @@ function renderManualImport() {
       });
       $("[data-action='copy-ai']").addEventListener("click", async (event) => {
         state.manualCsv = $("#csvText").value;
+        track("ai_prompt_copied");
         await navigator.clipboard.writeText(AI_PROMPT);
         event.currentTarget.innerHTML = `${icon("check", 16)}Prompt copiado`;
         refreshIcons();
@@ -943,6 +957,7 @@ async function importMovements() {
       result = await plugin.parse(state.file, options);
     }
     const portfolio = createPortfolioFromImport(result);
+    track("movements_imported", { source_id: state.source, movement_count: portfolio.movements.length, has_errors: !!(result.errors?.length) });
     state.screen = "movements";
     state.file = null;
     state.fileReady = false;
@@ -950,6 +965,7 @@ async function importMovements() {
     setNotice(result.errors?.length ? "warn" : "success", `Cartera creada con ${portfolio.movements.length} movimiento(s).`);
     render();
   } catch (error) {
+    track("movements_import_error", { source_id: state.source, error_message: error.message });
     setNotice("error", error.message || "No se pudo importar movimientos.");
     render();
   }
@@ -1109,6 +1125,7 @@ function bindMovementEditor() {
   });
 
   $("[data-action='movement-help']").addEventListener("click", () => {
+    track("guide_opened", { guide_type: "movement", source_id: portfolio?.source_type || "unknown" });
     openMovementGuideModal();
   });
 
@@ -1247,6 +1264,7 @@ function openMovementModal() {
       portfolio.movements = [...locked, ...readMovementEditor()];
       portfolio.movements.push(cleanMovements([row])[0]);
       invalidateResults();
+      track("movement_added", { tipo: row.tipo, moneda: row.moneda });
       setNotice("success", "Movimiento agregado. Revisá la tabla y guardá para continuar.");
       closeModal();
       renderMovements();
@@ -1310,6 +1328,7 @@ function openBulkMovementModal() {
       const locked = lockedMovementsOf(portfolio);
       portfolio.movements = cleanMovements([...locked, ...readMovementEditor(), ...normalized]);
       invalidateResults();
+      track("movement_bulk_added", { movement_count: normalized.length });
       setNotice("success", `${normalized.length} movimiento(s) agregados. Revisá la tabla y guardá para continuar.`);
       closeModal();
       renderMovements();
@@ -1415,6 +1434,7 @@ function bindSnapshotEditor() {
     openSnapshotModal();
   });
   $("[data-action='snapshot-help']").addEventListener("click", () => {
+    track("guide_opened", { guide_type: "snapshot", source_id: activePortfolio()?.source_type || "unknown" });
     openSnapshotGuideModal();
   });
   document.querySelectorAll("[data-action='remove-snapshot']").forEach((button) => {
@@ -1704,6 +1724,7 @@ function openSnapshotModal() {
       portfolio.snapshots.push(row);
       portfolio.snapshots = portfolio.snapshots.sort(snapshotCompare);
       invalidateResults();
+      track("snapshot_added", { currency: row.currency, timing: row.timing });
       setNotice("success", "Snapshot agregado. Revisá la tabla y guardá para continuar.");
       closeModal();
       renderSnapshots();
@@ -1973,6 +1994,13 @@ function queueResultCalculation(portfolio) {
       state.result = await calculatePortfolio(portfolioForResultRange(current));
       state.calculating = false;
       state.notice = null;
+      track("results_calculated", {
+        source_id: current.source_type || "unknown",
+        xirr_ars: state.result?.xirr?.ARS?.period ?? null,
+        xirr_usd: state.result?.xirr?.USD?.period ?? null,
+        snapshot_count: (current.snapshots || []).length,
+        movement_count: (current.movements || []).length
+      });
       render();
     } catch (error) {
       state.result = null;
@@ -2117,6 +2145,7 @@ function renderFinal() {
         render();
       });
       $("[data-action='backup']").addEventListener("click", () => {
+        track("backup_exported", { portfolio_count: 1 });
         downloadJson(backupPortfolios([portfolio]), `cartera-v4-${todayIso()}.json`);
       });
       $("[data-action='open-db-explorer']").addEventListener("click", () => {
@@ -2771,6 +2800,7 @@ function renderDbExplorer() {
 }
 
 function render() {
+  track("screen_view", { screen_name: state.screen });
   if (state.screen === "start") return renderStart();
   if (state.screen === "open-existing") return renderOpenExisting();
   if (state.screen === "new-basic") return renderNewBasic();

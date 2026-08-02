@@ -422,6 +422,7 @@
       ],
       note: "Usá siempre el valor total de la cartera que figura al final del reporte y mantené el mismo criterio de moneda para todos los snapshots."
     },
+    onboardingPdf: "guides/onboarding_inviu.pdf",
     accept: ".xlsx",
     parse: parseInviuMovements
   });

@@ -37,6 +37,7 @@ const MANUAL_SOURCE = {
   copy: "Pegá CSV o usá el prompt de IA.",
   logoHtml: icon("file-text", 34),
   logoClass: "",
+  onboardingPdf: "guides/onboarding_manual.pdf",
   isManual: true
 };
 
@@ -132,6 +133,7 @@ function sourceConfigForPlugin(plugin) {
         "Volvé a esta pantalla y subí el archivo."
       ],
     accountField: plugin.accountField || null,
+    onboardingPdf: plugin.onboardingPdf || null,
     plugin,
     isManual: false
   };
@@ -757,6 +759,7 @@ function renderImport() {
           <h2 class="panel-title">${escapeHtml(source.importTitle)}</h2>
           <p class="panel-subtitle">Subí el XLSX una sola vez para crear la cartera. Luego las ediciones son manuales.</p>
         </div>
+        ${source.onboardingPdf ? `<a class="btn btn-secondary" href="${escapeHtml(source.onboardingPdf)}" target="_blank" rel="noopener">${icon("file-text", 16)}Guía completa (PDF)</a>` : ""}
       </div>
       <div class="import-layout">
         <div>
@@ -864,6 +867,7 @@ function renderManualImport() {
           <h2 class="panel-title">Carga manual de movimientos</h2>
           <p class="panel-subtitle">Pegá un CSV normalizado o usá IA para generarlo desde otro archivo.</p>
         </div>
+        <a class="btn btn-secondary" href="${escapeHtml(MANUAL_SOURCE.onboardingPdf)}" target="_blank" rel="noopener">${icon("file-text", 16)}Guía completa (PDF)</a>
       </div>
       <div class="grid-2">
         <div class="utility-card">
@@ -1463,6 +1467,11 @@ function openSnapshotGuideModal() {
   const initialGuide = activePlugin
     ? snapshotGuideForPlugin(activePlugin)
     : snapshotGuideForPortfolio(portfolio);
+  const initialPdf = activePlugin?.onboardingPdf || null;
+
+  const pdfLinkHtml = (pdf) => pdf
+    ? `<a class="btn btn-secondary" href="${escapeHtml(pdf)}" target="_blank" rel="noopener" data-pdf-action>${icon("file-text", 16)}Guía completa (PDF)</a>`
+    : `<span data-pdf-action></span>`;
 
   showModal(`
     <div class="modal-form snapshot-guide-modal">
@@ -1478,6 +1487,7 @@ function openSnapshotGuideModal() {
         ${snapshotGuideBody(initialGuide)}
       </div>
       <div class="actions">
+        ${pdfLinkHtml(initialPdf)}
         <button type="button" class="btn btn-primary" data-action="close-modal">Entendido${icon("check", 16)}</button>
       </div>
     </div>
@@ -1494,6 +1504,7 @@ function openSnapshotGuideModal() {
         const plugin = plugins.find((p) => p.id === tab.dataset.pluginId);
         const guide = plugin ? snapshotGuideForPlugin(plugin) : snapshotGuideForPortfolio(portfolio);
         wrapper.querySelector(".snapshot-guide-body").innerHTML = snapshotGuideBody(guide);
+        wrapper.querySelector("[data-pdf-action]").outerHTML = pdfLinkHtml(plugin?.onboardingPdf || null);
         refreshIcons();
       });
     });

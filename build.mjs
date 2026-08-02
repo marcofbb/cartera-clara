@@ -27,4 +27,8 @@ if (existsSync(join(root, "data"))) {
   cpSync(join(root, "data"), join(dist, "data"), { recursive: true });
 }
 
+if (existsSync(join(root, "docs", "onboarding-pdf"))) {
+  cpSync(join(root, "docs", "onboarding-pdf"), join(dist, "guides"), { recursive: true });
+}
+
 console.log("v4 build completo: dist/");

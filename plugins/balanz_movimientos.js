@@ -420,6 +420,7 @@
       ],
       note: "Usá siempre el Total de la primera página del PDF y mantené el mismo criterio de moneda para todos los snapshots."
     },
+    onboardingPdf: "guides/onboarding_balanz.pdf",
     accept: ".xlsx",
     parse: parseBalanzMovements
   });

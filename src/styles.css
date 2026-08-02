@@ -662,6 +662,12 @@ button {
   width: 100%;
 }
 
+.bulk-toolbar {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .source-card {
   min-height: 170px;
   padding: 24px;

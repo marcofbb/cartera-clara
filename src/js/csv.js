@@ -145,8 +145,12 @@ export function parseManualCsv(text) {
   };
 }
 
-export function downloadCsvTemplate() {
-  const csv = "fecha,tipo,moneda,monto\n2026-01-10,ingreso,ARS,100000\n2026-02-15,retiro,USD,500\n";
+export function downloadCsvTemplate(afterDate = null) {
+  const base = afterDate ? new Date(`${afterDate}T00:00:00`) : new Date("2026-01-01T00:00:00");
+  const d1 = new Date(base); d1.setDate(d1.getDate() + 10);
+  const d2 = new Date(base); d2.setDate(d2.getDate() + 46);
+  const fmt = (d) => d.toISOString().slice(0, 10);
+  const csv = `fecha,tipo,moneda,monto\n${fmt(d1)},ingreso,ARS,100000\n${fmt(d2)},retiro,USD,500\n`;
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");

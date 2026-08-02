@@ -1299,6 +1299,13 @@ function openBulkMovementModal() {
         </div>
         <button type="button" class="icon-btn" data-action="close-modal">${icon("x", 16)}</button>
       </div>
+      <div class="bulk-toolbar">
+        <button type="button" class="btn btn-secondary" id="bulkDownloadTemplate">${icon("download", 16)}Descargar template</button>
+        <label class="btn btn-secondary" style="cursor:pointer">
+          ${icon("folder-open", 16)}Cargar CSV
+          <input type="file" id="bulkFileInput" accept=".csv,.txt" style="display:none">
+        </label>
+      </div>
       <label class="field">
         <span class="label">CSV</span>
         <textarea class="input textarea-bulk" id="bulkCsvInput" rows="8" placeholder="fecha,tipo,moneda,monto&#10;2025-01-10,ingreso,ARS,100000&#10;2025-02-15,retiro,USD,500" required></textarea>
@@ -1310,6 +1317,14 @@ function openBulkMovementModal() {
       </div>
     </form>
   `, () => {
+    $("#bulkDownloadTemplate").addEventListener("click", () => downloadCsvTemplate(lockDate));
+    $("#bulkFileInput").addEventListener("change", (event) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (e) => { $("#bulkCsvInput").value = e.target.result; };
+      reader.readAsText(file, "UTF-8");
+    });
     $("#bulkModalForm").addEventListener("submit", (event) => {
       event.preventDefault();
       const text = $("#bulkCsvInput").value;

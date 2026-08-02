@@ -1531,7 +1531,8 @@ function openMovementGuideModal() {
         const plugin = plugins.find((p) => p.id === tab.dataset.pluginId);
         const guide = plugin ? guideForPlugin(plugin) : initial;
         wrapper.querySelector(".snapshot-guide-body").innerHTML = bodyHtml(guide);
-        wrapper.querySelector("[data-pdf-action]").outerHTML = pdfLinkHtml(guide.pdf);
+        const pdfEl = wrapper.querySelector("[data-pdf-action]");
+        if (pdfEl) pdfEl.outerHTML = pdfLinkHtml(guide.pdf);
         refreshIcons();
       });
     });
@@ -1604,7 +1605,8 @@ function openSnapshotGuideModal() {
         const plugin = plugins.find((p) => p.id === tab.dataset.pluginId);
         const guide = plugin ? snapshotGuideForPlugin(plugin) : snapshotGuideForPortfolio(portfolio);
         wrapper.querySelector(".snapshot-guide-body").innerHTML = snapshotGuideBody(guide);
-        wrapper.querySelector("[data-pdf-action]").outerHTML = pdfLinkHtml(plugin?.onboardingPdf || null);
+        const pdfEl = wrapper.querySelector("[data-pdf-action]");
+        if (pdfEl) pdfEl.outerHTML = pdfLinkHtml(plugin?.onboardingPdf || null);
         refreshIcons();
       });
     });

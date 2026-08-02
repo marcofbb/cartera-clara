@@ -1027,6 +1027,17 @@ button {
   gap: 18px;
 }
 
+.snapshot-guide-modal .actions {
+  position: sticky;
+  bottom: -26px;
+  background: #fff;
+  padding-bottom: 26px;
+  margin-bottom: -26px;
+  margin-top: 0;
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+}
+
 .guide-plugin-tabs {
   display: flex;
   flex-wrap: wrap;

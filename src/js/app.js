@@ -1434,39 +1434,93 @@ function bindSnapshotEditor() {
   });
 }
 
+function snapshotGuideBody(guide) {
+  return `
+    <ol class="guide-list snapshot-guide-list">
+      ${guide.steps.map((step, index) => `<li><strong>${index + 1}</strong><span>${escapeHtml(step)}</span></li>`).join("")}
+    </ol>
+    <div class="notice">${icon("info", 18)}<span>${escapeHtml(guide.note)}</span></div>
+  `;
+}
+
 function openSnapshotGuideModal() {
   const portfolio = activePortfolio();
-  const guide = snapshotGuideForPortfolio(portfolio);
+  const activeSource = portfolio?.source_type || state.source;
+  const plugins = brokerPlugins();
+  const hasMultiple = plugins.length > 1;
+
+  const tabsHtml = hasMultiple ? `
+    <div class="guide-plugin-tabs" role="tablist">
+      ${plugins.map((p) => `
+        <button class="guide-plugin-tab ${p.id === activeSource ? "active" : ""}" data-plugin-id="${escapeHtml(p.id)}" role="tab" aria-selected="${p.id === activeSource ? "true" : "false"}">
+          ${escapeHtml(pluginLabel(p))}
+        </button>
+      `).join("")}
+    </div>
+  ` : "";
+
+  const activePlugin = plugins.find((p) => p.id === activeSource) || plugins[0] || null;
+  const initialGuide = activePlugin
+    ? snapshotGuideForPlugin(activePlugin)
+    : snapshotGuideForPortfolio(portfolio);
+
   showModal(`
     <div class="modal-form snapshot-guide-modal">
       <div class="modal-head">
         <div>
-          <h2>${escapeHtml(guide.title)}</h2>
-          <p>${escapeHtml(guide.intro)}</p>
+          <h2>Cómo obtener snapshots</h2>
+          <p>Seguí los pasos para obtener el valor total de la cartera desde tu broker.</p>
         </div>
         <button type="button" class="icon-btn" data-action="close-modal">${icon("x", 16)}</button>
       </div>
-      <ol class="guide-list snapshot-guide-list">
-        ${guide.steps.map((step, index) => `<li><strong>${index + 1}</strong><span>${escapeHtml(step)}</span></li>`).join("")}
-      </ol>
-      <div class="notice">${icon("info", 18)}<span>${escapeHtml(guide.note)}</span></div>
+      ${tabsHtml}
+      <div class="snapshot-guide-body">
+        ${snapshotGuideBody(initialGuide)}
+      </div>
       <div class="actions">
         <button type="button" class="btn btn-primary" data-action="close-modal">Entendido${icon("check", 16)}</button>
       </div>
     </div>
-  `);
+  `, (wrapper) => {
+    if (!hasMultiple) return;
+    wrapper.querySelectorAll(".guide-plugin-tab").forEach((tab) => {
+      tab.addEventListener("click", () => {
+        wrapper.querySelectorAll(".guide-plugin-tab").forEach((t) => {
+          t.classList.remove("active");
+          t.setAttribute("aria-selected", "false");
+        });
+        tab.classList.add("active");
+        tab.setAttribute("aria-selected", "true");
+        const plugin = plugins.find((p) => p.id === tab.dataset.pluginId);
+        const guide = plugin ? snapshotGuideForPlugin(plugin) : snapshotGuideForPortfolio(portfolio);
+        wrapper.querySelector(".snapshot-guide-body").innerHTML = snapshotGuideBody(guide);
+        refreshIcons();
+      });
+    });
+  });
+}
+
+function snapshotGuideForPlugin(plugin) {
+  const label = pluginLabel(plugin);
+  const guide = plugin?.snapshotGuide || {};
+  return {
+    title: guide.title || `Cómo obtener snapshots en ${label}`,
+    intro: guide.intro || "Un snapshot es una foto del valor total de la cartera en una fecha concreta.",
+    steps: Array.isArray(guide.steps) && guide.steps.length ? guide.steps : defaultSnapshotSteps(label),
+    note: guide.note || "Usá siempre el valor total de la cartera y mantené el mismo criterio de moneda y momento del día para todos los snapshots."
+  };
 }
 
 function snapshotGuideForPortfolio(portfolio) {
   const source = portfolio?.source_type || state.source;
   const plugin = window.CarteraV4Plugins?.get?.(source) || null;
+  if (plugin) return snapshotGuideForPlugin(plugin);
   const meta = sourceMeta(source);
-  const guide = plugin?.snapshotGuide || {};
   return {
-    title: guide.title || `Cómo obtener snapshots en ${meta.label}`,
-    intro: guide.intro || "Un snapshot es una foto del valor total de la cartera en una fecha concreta.",
-    steps: Array.isArray(guide.steps) && guide.steps.length ? guide.steps : defaultSnapshotSteps(meta.label),
-    note: guide.note || "Usá siempre el valor total de la cartera y mantené el mismo criterio de moneda y momento del día para todos los snapshots."
+    title: `Cómo obtener snapshots en ${meta.label}`,
+    intro: "Un snapshot es una foto del valor total de la cartera en una fecha concreta.",
+    steps: defaultSnapshotSteps(meta.label),
+    note: "Usá siempre el valor total de la cartera y mantené el mismo criterio de moneda y momento del día para todos los snapshots."
   };
 }
 

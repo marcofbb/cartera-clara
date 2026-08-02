@@ -411,15 +411,16 @@
     },
     snapshotGuide: {
       title: "Cómo obtener snapshots en INVIU",
-      intro: "Usá el valor total de la cartera como foto de inicio o cierre del día.",
+      intro: "Para cada fecha de corte (inicio, cierres anuales y final), obtené el valor total de la cartera desde INVIU.",
       steps: [
-        "Entrá a INVIU y abrí la cuenta que estás midiendo.",
-        "Buscá el resumen, tenencias o vista donde figure el valor total de la cartera.",
-        "Copiá el valor total y la moneda en la que está expresado.",
-        "Si el valor es posterior a los movimientos del día, cargalo como cierre del día. Si es previo, cargalo como inicio del día.",
-        "Volvé a esta pantalla y cargá fecha, moneda, momento y valor total."
+        "En INVIU, ir a Portfolio → Reportes → Portfolio histórico.",
+        "Seleccionar la fecha del snapshot que se desea cargar.",
+        "Descargar el PDF (o Excel) del portfolio histórico.",
+        "Tomar el valor total de la cartera que figura al final del reporte.",
+        "Volver al Analizador de Cartera y completar un snapshot con: fecha del corte, moneda (ARS o USD MEP, según corresponda), momento (generalmente Cierre del día), valor total obtenido del reporte, y etiqueta (por ejemplo: Inicio, Cierre 2023, Cierre 2024, Cierre 2025, Final).",
+        "Repetir el proceso para cada fecha requerida."
       ],
-      note: "Para que el rendimiento sea consistente, usá siempre la misma cuenta y no mezcles valores parciales con valores consolidados."
+      note: "Usá siempre el valor total de la cartera que figura al final del reporte y mantené el mismo criterio de moneda para todos los snapshots."
     },
     accept: ".xlsx",
     parse: parseInviuMovements

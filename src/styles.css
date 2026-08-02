@@ -999,6 +999,40 @@ button {
   gap: 18px;
 }
 
+.guide-plugin-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.guide-plugin-tab {
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.guide-plugin-tab:hover {
+  border-color: var(--blue);
+  color: var(--blue);
+  background: var(--blue-soft);
+}
+
+.guide-plugin-tab.active {
+  background: var(--blue);
+  border-color: var(--blue);
+  color: #fff;
+}
+
+.snapshot-guide-body {
+  display: contents;
+}
+
 .snapshot-guide-list {
   border: 1px solid var(--line);
   border-radius: 14px;

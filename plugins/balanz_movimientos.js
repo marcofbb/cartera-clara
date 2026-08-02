@@ -396,25 +396,29 @@
     cardDescription: "Importá el XLSX exportado desde Balanz.",
     logoText: "Balanz",
     logoClass: "balanz-logo",
-    importTitle: "Exportar movimientos desde Balanz",
+    importTitle: "Descargar movimientos desde Balanz",
     importSteps: [
-      "Actividad.",
-      "Movimientos.",
-      "Seleccioná todo el período.",
-      "Descargá el archivo.",
-      "Volvé a esta pantalla y subí el archivo."
+      "Ingresar a Actividad → Movimientos.",
+      "Seleccionar la pestaña Movimientos.",
+      "Elegir el período completo de la cartera (desde el primer movimiento hasta la fecha actual).",
+      "Hacer clic en Descargar y exportar el archivo en XLSX.",
+      "Volver al Analizador de Cartera, elegir Balanz como origen y subir el archivo descargado para importar los movimientos."
     ],
     snapshotGuide: {
       title: "Cómo obtener snapshots en Balanz",
-      intro: "Usá una foto del valor total de la cartera para la fecha que querés medir.",
+      intro: "Para cada fecha de corte (inicio, cierres anuales y final), obtené el valor total de la cartera desde el reporte de posición consolidada.",
       steps: [
-        "Entrá a Balanz y abrí la cuenta que estás midiendo.",
-        "Abrí la vista de cartera, resumen o tenencias donde figure el valor total.",
-        "Copiá el valor total y la moneda en la que está expresado.",
-        "Si el valor ya incluye los movimientos de ese día, cargalo como cierre del día. Si todavía no los incluye, cargalo como inicio del día.",
-        "Volvé a esta pantalla y cargá fecha, moneda, momento y valor total."
+        "Ingresar a Actividad → Movimientos.",
+        "Hacer clic en Reportes.",
+        "Seleccionar el reporte Posición consolidada.",
+        "Elegir la fecha del snapshot que se desea cargar (inicio, cierres anuales y final).",
+        "Seleccionar la moneda correspondiente (Pesos o USD).",
+        "Descargar el PDF del reporte.",
+        "Tomar el Total que figura en la primera página del PDF.",
+        "Volver al Analizador de Cartera y completar el snapshot con: fecha del reporte, moneda (ARS o USD MEP), momento (Cierre del día), valor total obtenido del PDF, y etiqueta (Inicio, Cierre 2022, Cierre 2023, Cierre 2024, Cierre 2025 o Final).",
+        "Repetir el proceso para todas las fechas necesarias y luego hacer clic en Guardar y continuar para calcular los resultados."
       ],
-      note: "No uses el valor de un activo individual. El snapshot debe representar el total de la cartera o cuenta que estás analizando."
+      note: "Usá siempre el Total de la primera página del PDF y mantené el mismo criterio de moneda para todos los snapshots."
     },
     accept: ".xlsx",
     parse: parseBalanzMovements

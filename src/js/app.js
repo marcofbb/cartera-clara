@@ -1305,6 +1305,7 @@ function openBulkMovementModal() {
           ${icon("folder-open", 16)}Cargar CSV
           <input type="file" id="bulkFileInput" accept=".csv,.txt" style="display:none">
         </label>
+        <button type="button" class="btn btn-secondary" id="bulkCopyAi">${icon("copy", 16)}Copiar prompt para IA</button>
       </div>
       <label class="field">
         <span class="label">CSV</span>
@@ -1318,6 +1319,12 @@ function openBulkMovementModal() {
     </form>
   `, () => {
     $("#bulkDownloadTemplate").addEventListener("click", () => downloadCsvTemplate(lockDate));
+    $("#bulkCopyAi").addEventListener("click", async (event) => {
+      track("ai_prompt_copied");
+      await navigator.clipboard.writeText(AI_PROMPT);
+      event.currentTarget.innerHTML = `${icon("check", 16)}Prompt copiado`;
+      refreshIcons();
+    });
     $("#bulkFileInput").addEventListener("change", (event) => {
       const file = event.target.files?.[0];
       if (!file) return;

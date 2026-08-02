@@ -1846,17 +1846,23 @@ function snapshotRangeOptions(portfolio) {
   availableYears.forEach((year) => {
     const startContext = startContextForYear(snapshots, year);
     const start = startContext?.snapshot || null;
-    const end = endBoundaryForYear(snapshots, year);
+    const closedEnd = endBoundaryForYear(snapshots, year);
+    const isCurrentYear = year === currentYear;
+    const end = closedEnd || (isCurrentYear ? latestSnapshotUntilToday(snapshots) : null);
     if (startContext) rangeStartYears.push(year);
     if (!start || !end || snapshotCompare(start, end) >= 0) return;
+    const benchmarkEnd = closedEnd ? `${year}-12-31` : effectiveEndDate(end);
+    const endLabel = closedEnd
+      ? `${fmtDate(end.date)} (${end.timing === "end_day" ? "cierre" : "inicio"})`
+      : `${fmtDate(effectiveEndDate(end))} (último dato)`;
     annual.push(makePeriod(
       "year",
       `Año ${year}${startContext.partial ? " (parcial)" : ""}`,
-      `${fmtDate(start.date)} (${start.timing === "end_day" ? "cierre" : "inicio"}) - ${fmtDate(end.date)} (${end.timing === "end_day" ? "cierre" : "inicio"}) · benchmark desde ${fmtDate(startContext.benchmarkStart)}`,
+      `${fmtDate(start.date)} (${start.timing === "end_day" ? "cierre" : "inicio"}) - ${endLabel} · benchmark desde ${fmtDate(startContext.benchmarkStart)}`,
       start,
       end,
       startContext.benchmarkStart,
-      `${year}-12-31`,
+      benchmarkEnd,
       { year, partialStart: startContext.partial }
     ));
   });

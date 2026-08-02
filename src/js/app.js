@@ -1012,9 +1012,12 @@ function renderMovements() {
           <h2 class="panel-title">Editar movimientos</h2>
           <p class="panel-subtitle">La importación inicial está cerrada. Desde ahora solo editás o agregás movimientos manualmente.</p>
         </div>
-        <div class="btn-group">
-          <button class="btn btn-secondary" data-action="add-movement">${icon("plus", 16)}Agregar movimiento</button>
-          <button class="btn btn-ghost" data-action="add-bulk">${icon("table-2", 16)}Agregar bulk</button>
+        <div class="toolbar">
+          <button class="btn btn-secondary" data-action="movement-help">${icon("circle-help", 16)}Cómo exportar movimientos</button>
+          <div class="btn-group">
+            <button class="btn btn-secondary" data-action="add-movement">${icon("plus", 16)}Agregar movimiento</button>
+            <button class="btn btn-ghost" data-action="add-bulk">${icon("table-2", 16)}Agregar bulk</button>
+          </div>
         </div>
       </div>
       ${lockSection}
@@ -1103,6 +1106,10 @@ function bindMovementEditor() {
   $("[data-action='back-start']").addEventListener("click", () => {
     state.screen = "start";
     render();
+  });
+
+  $("[data-action='movement-help']").addEventListener("click", () => {
+    openMovementGuideModal();
   });
 
   $("[data-action='add-movement']").addEventListener("click", () => {
@@ -1435,6 +1442,79 @@ function bindSnapshotEditor() {
     state.notice = null;
     invalidateResults();
     render();
+  });
+}
+
+function openMovementGuideModal() {
+  const portfolio = activePortfolio();
+  const activeSource = portfolio?.source_type || state.source;
+  const plugins = brokerPlugins();
+  const hasMultiple = plugins.length > 1;
+
+  const guideForPlugin = (p) => {
+    const cfg = sourceConfigForPlugin(p);
+    return { title: cfg.importTitle, steps: cfg.importSteps, pdf: p.onboardingPdf || null };
+  };
+
+  const bodyHtml = ({ title, steps }) => `
+    <h3 class="movement-guide-title">${escapeHtml(title)}</h3>
+    <ol class="guide-list snapshot-guide-list">
+      ${steps.map((step, i) => `<li><strong>${i + 1}</strong><span>${escapeHtml(step)}</span></li>`).join("")}
+    </ol>
+  `;
+
+  const pdfLinkHtml = (pdf) => pdf
+    ? `<a class="btn btn-secondary" href="${escapeHtml(pdf)}" target="_blank" rel="noopener" data-pdf-action>${icon("file-text", 16)}Guía completa (PDF)</a>`
+    : `<span data-pdf-action></span>`;
+
+  const tabsHtml = hasMultiple ? `
+    <div class="guide-plugin-tabs" role="tablist">
+      ${plugins.map((p) => `
+        <button class="guide-plugin-tab ${p.id === activeSource ? "active" : ""}" data-plugin-id="${escapeHtml(p.id)}" role="tab" aria-selected="${p.id === activeSource ? "true" : "false"}">
+          ${escapeHtml(pluginLabel(p))}
+        </button>
+      `).join("")}
+    </div>
+  ` : "";
+
+  const activePlugin = plugins.find((p) => p.id === activeSource) || plugins[0] || null;
+  const initial = activePlugin ? guideForPlugin(activePlugin) : { title: "Cómo exportar movimientos", steps: [], pdf: null };
+
+  showModal(`
+    <div class="modal-form snapshot-guide-modal">
+      <div class="modal-head">
+        <div>
+          <h2>Cómo exportar movimientos</h2>
+          <p>Seguí los pasos para exportar el archivo de movimientos desde tu broker.</p>
+        </div>
+        <button type="button" class="icon-btn" data-action="close-modal">${icon("x", 16)}</button>
+      </div>
+      ${tabsHtml}
+      <div class="snapshot-guide-body">
+        ${bodyHtml(initial)}
+      </div>
+      <div class="actions">
+        ${pdfLinkHtml(initial.pdf)}
+        <button type="button" class="btn btn-primary" data-action="close-modal">Entendido${icon("check", 16)}</button>
+      </div>
+    </div>
+  `, (wrapper) => {
+    if (!hasMultiple) return;
+    wrapper.querySelectorAll(".guide-plugin-tab").forEach((tab) => {
+      tab.addEventListener("click", () => {
+        wrapper.querySelectorAll(".guide-plugin-tab").forEach((t) => {
+          t.classList.remove("active");
+          t.setAttribute("aria-selected", "false");
+        });
+        tab.classList.add("active");
+        tab.setAttribute("aria-selected", "true");
+        const plugin = plugins.find((p) => p.id === tab.dataset.pluginId);
+        const guide = plugin ? guideForPlugin(plugin) : initial;
+        wrapper.querySelector(".snapshot-guide-body").innerHTML = bodyHtml(guide);
+        wrapper.querySelector("[data-pdf-action]").outerHTML = pdfLinkHtml(guide.pdf);
+        refreshIcons();
+      });
+    });
   });
 }
 

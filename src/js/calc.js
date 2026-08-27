@@ -162,6 +162,7 @@ function computeCashflowBenchmark(db, result, movements, warnings, currency, pri
 
   return {
     return: period,
+    flows: sortedFlows,
     detail: {
       method: "cashflow_simulation",
       bmv_date: result.bmv_date,
@@ -689,5 +690,192 @@ export async function calculatePortfolio(portfolio) {
     benchmarks,
     warnings: Array.from(new Set(warnings)),
     db_generated_at: dbMeta.generated_at || null,
+  };
+}
+
+// Combines several portfolios into one blended result, the way a person
+// with money split across brokers/accounts would want to see it. Portfolios
+// don't need matching start/end dates or the same amount of history — each
+// keeps its own snapshot range, and:
+//  - "Valor inicial/final" and Aportes/Retiros are straight sums of each
+//    portfolio's own bmv/emv (each valued as of ITS OWN date).
+//  - XIRR pools every portfolio's own dated cash flows (its bmv as a flow at
+//    its own start, its movements, its emv as a flow at its own end) into
+//    one list and solves a single money-weighted rate — this is valid
+//    regardless of how mismatched the individual date ranges are.
+//  - Modified Dietz generalizes the same way: each portfolio's own bmv is
+//    weighted by how much of the combined window it was actually invested
+//    for, exactly like a movement would be if it landed mid-period.
+//  - "Con tus flujos" benchmarks (MEP/UVA/SPY) run the same unit-purchase
+//    simulation independently per portfolio, then pool THOSE simulated cash
+//    flows the same way, for the same reason.
+export async function calculateCombinedPortfolios(portfolios) {
+  const db = await loadMarketDb();
+  const warnings = [];
+
+  const prepared = portfolios.map((portfolio) => ({
+    portfolio,
+    snapshots: portfolio.snapshots.slice().sort(snapshotCompare),
+    movements: portfolio.movements.slice().sort((a, b) => a.date.localeCompare(b.date))
+  }));
+
+  const results = { ARS: null, USD: null };
+  const xirrResults = {
+    ARS: { annual: null, period: null, cashflows: [] },
+    USD: { annual: null, period: null, cashflows: [] }
+  };
+
+  ["ARS", "USD"].forEach((currency) => {
+    const included = [];
+    prepared.forEach(({ portfolio, snapshots, movements }) => {
+      const r = computeChained(db, snapshots, movements, currency, warnings);
+      if (r) included.push({ portfolio, result: r, movements });
+    });
+    if (!included.length) return;
+
+    const bmv = included.reduce((s, x) => s + x.result.bmv, 0);
+    const emv = included.reduce((s, x) => s + x.result.emv, 0);
+    const aportes = included.reduce((s, x) => s + x.result.aportes, 0);
+    const retiros = included.reduce((s, x) => s + x.result.retiros, 0);
+    const bmvDate = included.map((x) => x.result.bmv_date).sort()[0];
+    const emvDate = included.map((x) => x.result.emv_date).sort().at(-1);
+    const netCf = aportes - retiros;
+    const gain = emv - bmv - netCf;
+
+    const totalDays = Math.max(1, daysBetween(bmvDate, emvDate));
+    const weightAt = (date) => (totalDays - Math.max(0, daysBetween(bmvDate, date))) / totalDays;
+
+    let weightedCf = 0;
+    included.forEach(({ result }) => {
+      weightedCf += result.bmv * weightAt(result.bmv_date);
+      (result.sub_periods || []).forEach((period) => {
+        (period.mov_detail || []).forEach((mv) => {
+          const w = weightAt(mv.date);
+          weightedCf += mv.type === "ingreso" ? mv.amount * w : -mv.amount * w;
+        });
+      });
+    });
+
+    const capitalBase = weightedCf;
+    let rendimiento = null;
+    let degenerateReason = null;
+    if (capitalBase < 0) degenerateReason = "Capital base negativo.";
+    else if (Math.abs(capitalBase) < 0.05 * Math.max(Math.abs(bmv), Math.abs(emv), 1)) degenerateReason = "Capital base no significativo.";
+    else rendimiento = gain / capitalBase;
+
+    results[currency] = {
+      bmv,
+      emv,
+      bmv_date: bmvDate,
+      emv_date: emvDate,
+      bmv_timing: "start_day",
+      emv_timing: "end_day",
+      aportes,
+      retiros,
+      net_cf: netCf,
+      ganancia_neta: gain,
+      capital_base: capitalBase,
+      rendimiento,
+      degenerate_reason: degenerateReason,
+      is_chained: included.length > 1,
+      breakdown: included.map((x) => ({
+        id: x.portfolio.id,
+        name: x.portfolio.portfolio_name,
+        bmv: x.result.bmv,
+        bmv_date: x.result.bmv_date,
+        emv: x.result.emv,
+        emv_date: x.result.emv_date,
+        aportes: x.result.aportes,
+        retiros: x.result.retiros,
+        rendimiento: x.result.rendimiento
+      }))
+    };
+
+    const pooledFlows = [];
+    included.forEach(({ portfolio, result, movements }) => {
+      const flows = xirrCashflows(db, result, movements, currency, warnings);
+      if (flows) flows.forEach((f) => pooledFlows.push({ ...f, portfolio_name: portfolio.portfolio_name }));
+    });
+    if (pooledFlows.length && pooledFlows.some((f) => f.amount > 0) && pooledFlows.some((f) => f.amount < 0)) {
+      const sorted = pooledFlows.sort((a, b) => a.date.localeCompare(b.date));
+      xirrResults[currency] = { ...xirrPeriodReturn(sorted), cashflows: sorted };
+    }
+  });
+
+  const globalStart = prepared.reduce((min, p) => {
+    const d = p.snapshots[0]?.date;
+    return d && (!min || d < min) ? d : min;
+  }, null);
+  const globalEnd = prepared.reduce((max, p) => {
+    const d = p.snapshots[p.snapshots.length - 1]?.date;
+    return d && (!max || d > max) ? d : max;
+  }, null);
+  const benchmarks = globalStart && globalEnd ? benchmarkReturns(db, globalStart, globalEnd, warnings) : [];
+
+  function addCombinedCashflowBenchmark(id, label, group, priceAtFn, afterId) {
+    const included = [];
+    prepared.forEach(({ portfolio, snapshots, movements }) => {
+      const r = computeChained(db, snapshots, movements, group, warnings);
+      if (r) included.push({ portfolio, result: r, movements });
+    });
+    if (!included.length) return;
+
+    const perPortfolio = [];
+    const pooled = [];
+    included.forEach(({ portfolio, result, movements }) => {
+      const cf = computeCashflowBenchmark(db, result, movements, warnings, group, priceAtFn);
+      if (!cf) return;
+      perPortfolio.push({ name: portfolio.portfolio_name, return: cf.return, bmv_date: result.bmv_date, emv_date: result.emv_date });
+      cf.flows.forEach((f) => pooled.push({ ...f, portfolio_name: portfolio.portfolio_name }));
+    });
+    if (!pooled.length || !pooled.some((f) => f.amount > 0) || !pooled.some((f) => f.amount < 0)) return;
+
+    const sorted = pooled.sort((a, b) => a.date.localeCompare(b.date));
+    const annual = xirr(sorted);
+    if (annual === null) return;
+    const days = daysBetween(sorted[0].date, sorted[sorted.length - 1].date);
+    const period = days > 0 ? Math.pow(1 + annual, days / 365) - 1 : null;
+    if (period === null) return;
+
+    const chip = {
+      id,
+      label,
+      group,
+      return: period,
+      source: "cashflow_simulation_combined",
+      detail: {
+        method: "cashflow_simulation_combined",
+        xirr_annual: annual,
+        xirr_period: period,
+        xirr_days: days,
+        per_portfolio: perPortfolio,
+        flows: sorted
+      }
+    };
+    const idx = benchmarks.findIndex((b) => b.id === afterId);
+    if (idx >= 0) benchmarks.splice(idx + 1, 0, chip);
+    else benchmarks.push(chip);
+  }
+
+  addCombinedCashflowBenchmark("dolar_mep_cf", "Dólar MEP (con tus flujos)", "ARS", rateAt, "dolar_mep");
+  addCombinedCashflowBenchmark("uva_cf", "UVA (con tus flujos)", "ARS", (dbArg, date, w) => monthlyIndexAt(dbArg, "uva", date, w), "uva");
+  addCombinedCashflowBenchmark("spy_cf", "SPY (con tus flujos)", "USD", (dbArg, date) => spyPriceAt(dbArg, date), "spy");
+
+  const metaRows = queryRows(db, "SELECT key, value FROM meta");
+  const dbMeta = Object.fromEntries(metaRows.map((r) => [r.key, r.value]));
+
+  return {
+    results,
+    xirr: xirrResults,
+    benchmarks,
+    warnings: Array.from(new Set(warnings)),
+    db_generated_at: dbMeta.generated_at || null,
+    portfolios_meta: prepared.map((p) => ({
+      id: p.portfolio.id,
+      name: p.portfolio.portfolio_name,
+      first_snapshot: p.snapshots[0]?.date || null,
+      last_snapshot: p.snapshots[p.snapshots.length - 1]?.date || null,
+      movement_count: p.movements.length
+    }))
   };
 }

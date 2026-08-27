@@ -1,6 +1,6 @@
 import { parseManualCsv, downloadCsvTemplate } from "./csv.js";
 import { track } from "./analytics.js";
-import { calculatePortfolio, loadMarketDb, queryMarketRows } from "./calc.js";
+import { calculateCombinedPortfolios, calculatePortfolio, loadMarketDb, queryMarketRows } from "./calc.js";
 import {
   $, buildSnapshotDefaults, cleanMovements, daysBetween, escapeHtml, fmtDate, fmtMoney, fmtPct, fmtPp,
   icon, isIsoDate, makeId, maxDate, normalizeMovement, normalizeSnapshot, refreshIcons,
@@ -83,7 +83,11 @@ const state = {
   db: null,
   dbLoading: false,
   dbTable: "exchange_rates",
-  showLockedMovements: false
+  showLockedMovements: false,
+  multiSelectedIds: [],
+  multiResult: null,
+  multiResultKey: "",
+  multiCalculating: false
 };
 
 function pluginRegistry() {
@@ -284,7 +288,7 @@ function stepIndex() {
 
 function renderLayout(content, options = {}) {
   const current = stepIndex();
-  const showStepper = state.screen !== "start";
+  const showStepper = state.screen !== "start" && state.screen !== "multi";
   const active = state.draft ? null : activePortfolio();
   app.innerHTML = `
     <div class="shell">
@@ -293,12 +297,15 @@ function renderLayout(content, options = {}) {
           <div class="brand-mark">${icon("line-chart", 20)}</div>
           <div>
             <h1 class="brand-title">Analizador de cartera</h1>
-            <p class="brand-subtitle">${active ? escapeHtml(active.portfolio_name) : "Onboarding de rendimiento"}</p>
+            <p class="brand-subtitle">${state.screen === "multi" ? "Análisis combinado" : active ? escapeHtml(active.portfolio_name) : "Onboarding de rendimiento"}</p>
           </div>
         </div>
-        <div class="toolbar" ${state.screen === "start" ? "hidden" : ""}>
-          <button class="btn btn-secondary" data-action="go-start">${icon("home", 16)}Inicio</button>
-          <button class="btn btn-secondary" data-action="export-backup">${icon("download", 16)}Backup</button>
+        <div class="toolbar">
+          <button class="btn btn-secondary" data-action="multi-analysis" ${state.portfolios.length < 2 ? "disabled" : ""}>${icon("layers", 16)}Analizar varias carteras</button>
+          <div class="toolbar" ${state.screen === "start" ? "hidden" : ""}>
+            <button class="btn btn-secondary" data-action="go-start">${icon("home", 16)}Inicio</button>
+            <button class="btn btn-secondary" data-action="export-backup">${icon("download", 16)}Backup</button>
+          </div>
         </div>
       </header>
       ${showStepper ? renderStepper(current) : ""}
@@ -426,6 +433,12 @@ function bindGlobalActions() {
     }
     track("backup_exported", { portfolio_count: state.portfolios.length });
     downloadJson(backupPortfolios(state.portfolios), `cartera-v4-backup-${todayIso()}.json`);
+  });
+  $("[data-action='multi-analysis']")?.addEventListener("click", () => {
+    if (state.portfolios.length < 2) return;
+    state.screen = "multi";
+    state.notice = null;
+    render();
   });
 }
 
@@ -2129,23 +2142,13 @@ function renderFinal() {
       </div>
       ${benchmarkAlerts(state.result)}
       ${state.result.warnings.map((warning) => `<div class="notice warn">${icon("triangle-alert", 18)}<span>${escapeHtml(warning)}</span></div>`).join("")}
-      <div class="table-wrap" style="margin-top:22px">
-        <table class="table">
-          <thead><tr><th>Benchmark</th><th>Moneda</th><th class="num">Cartera XIRR</th><th class="num">Benchmark</th><th class="num">Diferencia ${ppHelp()}</th></tr></thead>
-          <tbody>
-            ${state.result.benchmarks.map((item) => {
-              const portfolioReturn = state.result.xirr[item.group]?.period ?? null;
-              const diff = portfolioReturn !== null && item.return !== null ? portfolioReturn - item.return : null;
-              return `<tr><td><strong>${escapeHtml(item.label)}</strong></td><td>${item.group}</td><td class="num ${toneClass(portfolioReturn)}">${fmtPct(portfolioReturn)}</td><td class="num ${toneClass(item.return)}">${fmtPct(item.return)}</td><td class="num ${toneClass(diff)}">${fmtPp(diff)}</td></tr>`;
-            }).join("")}
-          </tbody>
-        </table>
-      </div>
+      ${benchmarkTable(state.result)}
       <div class="actions">
         <button class="btn btn-secondary" data-action="back">${icon("arrow-left", 16)}Snapshots</button>
         <button class="btn btn-secondary" data-action="backup">${icon("archive", 16)}Backup JSON</button>
       </div>
       ${calculationExplanation(state.result)}
+      ${aiAnalysisExplanation(portfolio, state.result)}
       <button class="btn btn-ghost db-explorer-btn" data-action="open-db-explorer">
         ${icon("database", 15)}Explorar base de datos de mercado
       </button>
@@ -2164,6 +2167,274 @@ function renderFinal() {
       $("[data-action='open-db-explorer']").addEventListener("click", () => {
         state.screen = "db-explorer";
         state.notice = null;
+        render();
+      });
+      $("[data-action='copy-ai-analysis']")?.addEventListener("click", async (event) => {
+        track("ai_analysis_prompt_copied", { portfolio_count: 1 });
+        await navigator.clipboard.writeText(buildAiAnalysisPrompt(portfolio, state.result));
+        event.currentTarget.innerHTML = `${icon("check", 16)}Prompt copiado`;
+        refreshIcons();
+      });
+    }
+  });
+}
+
+function buildAiAnalysisPrompt(portfolio, result) {
+  const dbUrl = new URL("data/cartera_v4.sqlite", location.href).href;
+
+  const snapshotsBlock = (portfolio.snapshots || [])
+    .slice()
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .map((s) => `${s.date} | ${s.timing === "start_day" ? "inicio de día" : "cierre de día"} | ${s.currency} ${s.amount}`)
+    .join("\n") || "(sin snapshots)";
+
+  const movementsBlock = (portfolio.movements || [])
+    .slice()
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .map((m) => `${m.date} | ${m.tipo} | ${m.moneda} ${m.monto}`)
+    .join("\n") || "(sin movimientos)";
+
+  const currencyBlock = (currency) => {
+    const r = result.results[currency];
+    const x = result.xirr[currency];
+    if (!r) return `${currency}: sin datos suficientes en este rango.`;
+    const gain = r.ganancia_neta ?? r.emv - r.bmv - (r.aportes - r.retiros);
+    return [
+      `${currency}:`,
+      `  Valor inicial: ${fmtMoney(r.bmv, currency)} (${r.bmv_date})`,
+      `  Valor final: ${fmtMoney(r.emv, currency)} (${r.emv_date})`,
+      `  Aportes: ${fmtMoney(r.aportes, currency)}`,
+      `  Retiros: ${fmtMoney(r.retiros, currency)}`,
+      `  Resultado (ganancia/pérdida neta): ${fmtMoney(gain, currency)}`,
+      `  Modified Dietz: ${fmtPct(r.rendimiento)}`,
+      `  XIRR período: ${fmtPct(x.period)}`,
+      `  XIRR anualizado: ${fmtPct(x.annual)}`
+    ].join("\n");
+  };
+
+  const benchmarksBlock = (result.benchmarks || []).map((b) => {
+    const portfolioReturn = result.xirr[b.group]?.period ?? null;
+    const diff = portfolioReturn !== null && b.return !== null ? portfolioReturn - b.return : null;
+    return `  ${b.label} (${b.group}): benchmark ${fmtPct(b.return)} | cartera ${fmtPct(portfolioReturn)} | diferencia ${fmtPp(diff)}`;
+  }).join("\n") || "  (sin benchmarks)";
+
+  return `Actuá como un analista financiero. Analizá el rendimiento de esta cartera de inversión y respondeme en español.
+
+Cartera: ${portfolio.portfolio_name}
+Origen: ${portfolio.source_label || portfolio.broker || "Manual"}
+
+=== RESUMEN CALCULADO POR LA APP (Cartera Clara) ===
+${currencyBlock("ARS")}
+
+${currencyBlock("USD")}
+
+=== COMPARACIÓN CONTRA BENCHMARKS (ya calculada por la app) ===
+${benchmarksBlock}
+
+=== SNAPSHOTS (fecha | momento | moneda monto) ===
+${snapshotsBlock}
+
+=== MOVIMIENTOS DE CAPITAL (fecha | tipo | moneda monto) ===
+${movementsBlock}
+
+=== BASE DE DATOS DE MERCADO (SQLite) ===
+Ahí están los tipos de cambio MEP diarios, UVA, SPY, TLT, IEF y plazo fijo TNA usados en estos cálculos. Descargala para verificar o recalcular:
+${dbUrl}
+(tablas: exchange_rates, benchmarks, market_daily, meta)
+
+=== LO QUE NECESITO ===
+1. Recalculá el XIRR (anualizado y del período) de la cartera en ARS y en USD MEP, a partir de los snapshots y movimientos de capital.
+2. Calculá el resultado (ganancia o pérdida neta) en ARS y en USD MEP.
+3. Comparalo contra SPY, UVA y dólar MEP: tanto el rendimiento simple de cada benchmark en el mismo rango de fechas, como una simulación de comprar/vender ese activo con exactamente los mismos flujos de la cartera.
+4. Mostrame el resultado de la cartera versus cada benchmark, en puntos porcentuales (cartera - benchmark).
+5. Dame recomendaciones concretas de cara adelante, basadas en lo que ves en los datos (composición implícita, timing de aportes/retiros, exposición a cada moneda).`;
+}
+
+function aiAnalysisExplanation(portfolio, result) {
+  return `
+    <details class="calculation-explanation">
+      <summary class="calculation-summary">
+        <span class="calculation-summary-icon">${icon("chevron-down", 18)}</span>
+        <div>
+          <h3>Analizar con IA</h3>
+          <p>Generá un prompt con el valor inicial, valor final, snapshots, movimientos (en ARS y USD) y el link a la base SQLite, para que una IA audite el cálculo, lo compare contra SPY/UVA/MEP y te dé recomendaciones.</p>
+        </div>
+        <span class="calculation-summary-action">Ver prompt</span>
+      </summary>
+      <div class="calculation-body">
+        <textarea class="textarea" rows="14" readonly spellcheck="false">${escapeHtml(buildAiAnalysisPrompt(portfolio, result))}</textarea>
+        <div class="actions">
+          <button class="btn btn-secondary" data-action="copy-ai-analysis">${icon("copy", 16)}Copiar prompt para IA</button>
+        </div>
+      </div>
+    </details>
+  `;
+}
+
+// ── Análisis combinado de varias carteras ───────────────────────────────────
+
+function multiResultKey() {
+  return state.multiSelectedIds
+    .slice()
+    .sort()
+    .map((id) => {
+      const p = state.portfolios.find((x) => x.id === id);
+      return `${id}:${p?.updated_at || ""}`;
+    })
+    .join("|");
+}
+
+function queueMultiResultCalculation() {
+  const ids = state.multiSelectedIds;
+  const key = multiResultKey();
+  state.multiCalculating = true;
+  state.multiResult = null;
+  state.multiResultKey = key;
+  queueMicrotask(async () => {
+    try {
+      const selected = state.portfolios.filter((p) => ids.includes(p.id));
+      if (selected.length < 2) throw new Error("Seleccioná al menos dos carteras.");
+      state.multiResult = await calculateCombinedPortfolios(selected);
+      state.multiCalculating = false;
+      state.notice = null;
+      track("multi_results_calculated", {
+        portfolio_count: selected.length,
+        xirr_ars: state.multiResult?.xirr?.ARS?.period ?? null,
+        xirr_usd: state.multiResult?.xirr?.USD?.period ?? null
+      });
+      render();
+    } catch (error) {
+      state.multiResult = null;
+      state.multiResultKey = "";
+      state.multiCalculating = false;
+      setNotice("error", error.message || "No se pudo calcular el resultado combinado.");
+      render();
+    }
+  });
+}
+
+function portfolioBreakdownTable(currency, result) {
+  const breakdown = result?.breakdown || [];
+  if (!breakdown.length) return "";
+  return `
+    <div class="table-wrap" style="margin-top:12px">
+      <table class="table">
+        <thead><tr><th>Cartera</th><th>Rango propio</th><th class="num">Valor inicial</th><th class="num">Valor final</th><th class="num">Rendimiento propio</th></tr></thead>
+        <tbody>
+          ${breakdown.map((b) => `
+            <tr>
+              <td><strong>${escapeHtml(b.name)}</strong></td>
+              <td>${fmtDate(b.bmv_date)} - ${fmtDate(b.emv_date)}</td>
+              <td class="num">${fmtMoney(b.bmv, currency)}</td>
+              <td class="num">${fmtMoney(b.emv, currency)}</td>
+              <td class="num ${toneClass(b.rendimiento)}">${fmtPct(b.rendimiento)}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderMultiAnalysis() {
+  if (state.portfolios.length < 2) {
+    renderLayout(`
+      <div class="panel">
+        <div class="panel-head"><div>
+          <h2 class="panel-title">Analizar varias carteras</h2>
+          <p class="panel-subtitle">Necesitás al menos dos carteras guardadas para combinar resultados.</p>
+        </div></div>
+        <div class="actions">
+          <button class="btn btn-secondary" data-action="back">${icon("arrow-left", 16)}Volver</button>
+        </div>
+      </div>
+    `, {
+      afterRender() {
+        $("[data-action='back']").addEventListener("click", () => {
+          state.screen = "start";
+          render();
+        });
+      }
+    });
+    return;
+  }
+
+  const key = multiResultKey();
+  const hasResult = !state.multiCalculating && state.multiResult && state.multiResultKey === key;
+
+  renderLayout(`
+    <div class="panel wide-panel">
+      <div class="panel-head">
+        <div>
+          <h2 class="panel-title">Analizar varias carteras</h2>
+          <p class="panel-subtitle">Elegí dos o más carteras para ver un XIRR, Modified Dietz y comparación de benchmarks combinados. Cada cartera conserva su propio rango de fechas — no hace falta que tengan el mismo historial ni estén igual de actualizadas.</p>
+        </div>
+      </div>
+      <div class="multi-portfolio-list">
+        ${state.portfolios.map((p) => {
+          const checked = state.multiSelectedIds.includes(p.id);
+          const sorted = (p.snapshots || []).slice().sort(snapshotCompare);
+          const first = sorted[0]?.date;
+          const last = sorted[sorted.length - 1]?.date;
+          return `
+            <label class="multi-portfolio-item">
+              <input type="checkbox" data-multi-portfolio="${escapeHtml(p.id)}" ${checked ? "checked" : ""} />
+              <div>
+                <strong>${escapeHtml(p.portfolio_name)}</strong>
+                <small>${escapeHtml(p.source_label || p.broker || "")} · ${first ? fmtDate(first) : "s/f"} - ${last ? fmtDate(last) : "s/f"}</small>
+              </div>
+            </label>
+          `;
+        }).join("")}
+      </div>
+      <div class="actions actions-right">
+        <button class="btn btn-secondary" data-action="back">${icon("arrow-left", 16)}Volver</button>
+        <button class="btn btn-primary" data-action="calc-multi" ${state.multiSelectedIds.length < 2 ? "disabled" : ""}>Calcular resultado combinado${icon("arrow-right", 16)}</button>
+      </div>
+
+      ${state.multiCalculating ? `
+        <div class="notice" style="margin-top:22px">${icon("loader-circle", 18)}<span>Combinando carteras y calculando resultados...</span></div>
+      ` : ""}
+
+      ${hasResult ? `
+        <div class="result-grid" style="margin-top:22px">
+          ${resultCard("ARS", state.multiResult.results.ARS, state.multiResult.xirr.ARS, state.multiResult)}
+          ${resultCard("USD", state.multiResult.results.USD, state.multiResult.xirr.USD, state.multiResult)}
+        </div>
+        ${state.multiResult.results.ARS?.breakdown?.length ? `
+          <h3 style="margin-top:22px">Detalle por cartera · ARS</h3>
+          ${portfolioBreakdownTable("ARS", state.multiResult.results.ARS)}
+        ` : ""}
+        ${state.multiResult.results.USD?.breakdown?.length ? `
+          <h3 style="margin-top:22px">Detalle por cartera · USD</h3>
+          ${portfolioBreakdownTable("USD", state.multiResult.results.USD)}
+        ` : ""}
+        ${benchmarkAlerts(state.multiResult)}
+        ${state.multiResult.warnings.map((warning) => `<div class="notice warn">${icon("triangle-alert", 18)}<span>${escapeHtml(warning)}</span></div>`).join("")}
+        ${benchmarkTable(state.multiResult)}
+        ${calculationExplanation(state.multiResult)}
+      ` : ""}
+    </div>
+  `, {
+    afterRender() {
+      document.querySelectorAll("[data-multi-portfolio]").forEach((input) => {
+        input.addEventListener("change", () => {
+          const id = input.dataset.multiPortfolio;
+          if (input.checked) {
+            if (!state.multiSelectedIds.includes(id)) state.multiSelectedIds.push(id);
+          } else {
+            state.multiSelectedIds = state.multiSelectedIds.filter((x) => x !== id);
+          }
+          render();
+        });
+      });
+      $("[data-action='back']").addEventListener("click", () => {
+        state.screen = "start";
+        render();
+      });
+      $("[data-action='calc-multi']")?.addEventListener("click", () => {
+        if (state.multiSelectedIds.length < 2) return;
+        queueMultiResultCalculation();
         render();
       });
     }
@@ -2277,6 +2548,24 @@ function benchmarkChips(allResult, group) {
           </span>
         `).join("")}
       </div>
+    </div>
+  `;
+}
+
+function benchmarkTable(result) {
+  if (!result.benchmarks.length) return "";
+  return `
+    <div class="table-wrap" style="margin-top:22px">
+      <table class="table">
+        <thead><tr><th>Benchmark</th><th>Moneda</th><th class="num">Cartera XIRR</th><th class="num">Benchmark</th><th class="num">Diferencia ${ppHelp()}</th></tr></thead>
+        <tbody>
+          ${result.benchmarks.map((item) => {
+            const portfolioReturn = result.xirr[item.group]?.period ?? null;
+            const diff = portfolioReturn !== null && item.return !== null ? portfolioReturn - item.return : null;
+            return `<tr><td><strong>${escapeHtml(item.label)}</strong></td><td>${item.group}</td><td class="num ${toneClass(portfolioReturn)}">${fmtPct(portfolioReturn)}</td><td class="num ${toneClass(item.return)}">${fmtPct(item.return)}</td><td class="num ${toneClass(diff)}">${fmtPp(diff)}</td></tr>`;
+          }).join("")}
+        </tbody>
+      </table>
     </div>
   `;
 }
@@ -2491,6 +2780,14 @@ function benchmarkResultBreakdown(item) {
     return spyCashflowBreakdown(item, detail);
   }
 
+  if (detail.method === "cashflow_simulation") {
+    return cashflowSimulationBreakdown(item, detail);
+  }
+
+  if (detail.method === "cashflow_simulation_combined") {
+    return cashflowSimulationCombinedBreakdown(item, detail);
+  }
+
   const periods = detail.periods || [];
   const methodText = detail.method === "tna_prorated"
     ? "Se toma la TNA mensual publicada, se prorratea por los días activos del mes y se acumula multiplicando cada factor."
@@ -2573,6 +2870,107 @@ function spyCashflowBreakdown(item, detail) {
             </thead>
             <tbody>${stepRows}</tbody>
           </table>
+        </div>
+      </details>
+    </div>
+  `;
+}
+
+function cashflowSimulationBreakdown(item, detail) {
+  const currency = item.group;
+  const isMep = item.id === "dolar_mep_cf";
+  const unitLabel = isMep ? "USD" : "UVA";
+  const unitDecimals = isMep ? [2, 2] : [4, 6];
+  const priceLabel = isMep ? "Tipo de cambio MEP" : "Valor UVA";
+  const actionVerb = isMep ? "comprar y vender dólares MEP" : "comprar y vender UVA";
+  const fmtPrice = (value) => isMep ? fmtRate(value) : fmtDecimal(value, 4, 6);
+
+  const steps = detail.steps || [];
+  const movSteps = steps.filter((s) => s.type === "ingreso" || s.type === "retiro");
+  const initialStep = steps.find((s) => s.type === "inicial");
+
+  const stepRows = steps.map((step) => {
+    const isInitial = step.type === "inicial";
+    const isFinal = step.type === "final";
+    const typeLabel = isInitial ? "Inicio" : isFinal ? "Cierre" : step.type === "ingreso" ? "Ingreso" : "Retiro";
+    const deltaSign = step.units_delta >= 0 ? "+" : "";
+    const unitsCell = isFinal
+      ? `<td class="num">${fmtDecimal(step.units_running, ...unitDecimals)}</td>`
+      : `<td class="num ${step.units_delta >= 0 ? "pos" : "neg"}">${deltaSign}${fmtDecimal(step.units_delta, ...unitDecimals)}</td>`;
+    const amountCell = `<td class="num">${fmtMoney(step.amount, currency)}</td>`;
+    return `
+      <tr>
+        <td>${fmtDate(step.date)} <small>${escapeHtml(typeLabel)}</small></td>
+        <td class="num">${fmtPrice(step.price)}</td>
+        ${amountCell}
+        ${unitsCell}
+        <td class="num">${fmtDecimal(step.units_running, ...unitDecimals)}</td>
+      </tr>
+    `;
+  }).join("");
+
+  return `
+    <div class="benchmark-method">
+      <span>Simula ${actionVerb} con exactamente los mismos movimientos de tu cartera, al ${priceLabel.toLowerCase()} del día de cada operación.</span>
+      <span>
+        Inicio ${fmtDate(detail.bmv_date)}: ${fmtDecimal(detail.initial_units, ...unitDecimals)} ${unitLabel}
+        (${fmtMoney(initialStep?.amount, currency)} ÷ ${fmtPrice(detail.price_start)}).
+        ${movSteps.length ? `${movSteps.length} movimiento(s) intermedio(s).` : "Sin movimientos intermedios."}
+      </span>
+      <span>
+        Cierre ${fmtDate(detail.emv_date)}: ${fmtDecimal(detail.final_units, ...unitDecimals)} ${unitLabel} × ${fmtPrice(detail.price_end)} = ${fmtMoney(detail.emv_simulated, currency)}.
+      </span>
+      <span>XIRR = ${fmtPct(detail.xirr_annual)} anual → (1 + ${fmtPct(detail.xirr_annual, false)}) ^ (${detail.xirr_days} / 365) - 1 = ${fmtPct(item.return)} en el período.</span>
+      <details class="benchmark-detail">
+        <summary>Ver tabla de operaciones (${steps.length})</summary>
+        <div class="calc-table-wrap compact">
+          <table class="calc-table benchmark-period-table">
+            <thead>
+              <tr>
+                <th>Fecha / Tipo</th>
+                <th class="num">${escapeHtml(priceLabel)}</th>
+                <th class="num">Monto ${currency}</th>
+                <th class="num">${unitLabel} Δ / total</th>
+                <th class="num">${unitLabel} acum.</th>
+              </tr>
+            </thead>
+            <tbody>${stepRows}</tbody>
+          </table>
+        </div>
+      </details>
+    </div>
+  `;
+}
+
+function cashflowSimulationCombinedBreakdown(item, detail) {
+  const currency = item.group;
+  const perPortfolio = detail.per_portfolio || [];
+  const flows = detail.flows || [];
+  const assetLabel = item.id === "spy_cf" ? "SPY" : item.id === "uva_cf" ? "UVA" : "dólares MEP";
+
+  return `
+    <div class="benchmark-method">
+      <span>Se simula comprar y vender ${assetLabel} de forma independiente en cada cartera (cada una con sus propias fechas de flujos) y se combinan esos flujos simulados en un único XIRR conjunto.</span>
+      <span>XIRR = ${fmtPct(detail.xirr_annual)} anual → (1 + ${fmtPct(detail.xirr_annual, false)}) ^ (${detail.xirr_days} / 365) - 1 = ${fmtPct(item.return)} en el período.</span>
+      ${perPortfolio.length ? `
+        <div class="calc-table-wrap compact">
+          <table class="calc-table benchmark-period-table">
+            <thead><tr><th>Cartera</th><th>Rango</th><th class="num">Rendimiento simulado</th></tr></thead>
+            <tbody>
+              ${perPortfolio.map((p) => `<tr><td>${escapeHtml(p.name)}</td><td>${fmtDate(p.bmv_date)} - ${fmtDate(p.emv_date)}</td><td class="num ${toneClass(p.return)}">${fmtPct(p.return)}</td></tr>`).join("")}
+            </tbody>
+          </table>
+        </div>
+      ` : ""}
+      <details class="benchmark-detail">
+        <summary>Ver flujos combinados (${flows.length})</summary>
+        <div class="calc-flow-list">
+          ${flows.map((flow) => `
+            <div class="calc-flow">
+              <div class="calc-flow-main"><span>${fmtDate(flow.date)} · ${escapeHtml(flow.portfolio_name || "")}</span></div>
+              <strong class="${toneClass(flow.amount)}">${fmtSignedMoney(flow.amount, currency)}</strong>
+            </div>
+          `).join("")}
         </div>
       </details>
     </div>
@@ -2667,6 +3065,7 @@ function benchmarkSourceLabel(item) {
   if (item.id === "plazo_fijo") return "TNA mensual prorrateada por días";
   if (item.source === "daily_prices") return "Simulación con precios diarios de SPY";
   if (item.source === "cashflow_simulation") return `Simulación de tus flujos comprando/vendiendo ${item.id === "uva_cf" ? "UVA" : "dólar MEP"} en cada fecha`;
+  if (item.source === "cashflow_simulation_combined") return `Simulación por cartera, combinada en un XIRR conjunto (${item.id === "spy_cf" ? "SPY" : item.id === "uva_cf" ? "UVA" : "dólar MEP"})`;
   return "Rendimiento mensual ponderado por días activos";
 }
 
@@ -2692,6 +3091,162 @@ function resultCard(currency, result, xirr, allResult) {
 }
 
 // ── DB Explorer ───────────────────────────────────────────────────────────────
+
+const CHART_META = {
+  ars_per_usd: { label: "Dólar MEP", color: "#2563eb" },
+  dolar_mep: { label: "Dólar MEP", color: "#2563eb" },
+  plazo_fijo_tna: { label: "Plazo fijo", color: "#ca8a04" },
+  uva: { label: "UVA", color: "#7c3aed" },
+  spy: { label: "SPY", color: "#16a34a" },
+  tlt: { label: "TLT", color: "#dc2626" },
+  ief: { label: "IEF", color: "#0891b2" }
+};
+
+function fmtChartDate(ms) {
+  return new Date(ms).toLocaleDateString("es-AR", { month: "short", year: "2-digit", timeZone: "UTC" });
+}
+
+function buildChartPath(points, xScale, yScale) {
+  return points.map((p, i) => `${i === 0 ? "M" : "L"} ${xScale(p[0]).toFixed(2)} ${yScale(p[1]).toFixed(2)}`).join(" ");
+}
+
+// Renders a self-contained, dependency-free SVG line chart (no charting lib
+// needed — the app runs 100% client-side, keeps that footprint small).
+function svgLineChart(series, opts = {}) {
+  const nonEmpty = series.filter((s) => s.points.length > 1);
+  if (!nonEmpty.length) return `<p class="muted">Sin datos suficientes para graficar.</p>`;
+
+  const width = 960;
+  const height = opts.height || 240;
+  const padL = 60, padR = 16, padT = 16, padB = 26;
+  const innerW = width - padL - padR;
+  const innerH = height - padT - padB;
+  const yFormat = opts.yFormat || ((v) => v.toFixed(2));
+
+  const allPoints = nonEmpty.flatMap((s) => s.points);
+  const xs = allPoints.map((p) => p[0]);
+  const ys = allPoints.map((p) => p[1]);
+  const xMin = Math.min(...xs), xMax = Math.max(...xs);
+  const yMinRaw = Math.min(...ys), yMaxRaw = Math.max(...ys);
+  const yPad = (yMaxRaw - yMinRaw) * 0.08 || Math.abs(yMaxRaw || 1) * 0.08;
+  const yMin = yMinRaw - yPad;
+  const yMax = yMaxRaw + yPad;
+
+  const xScale = (x) => (xMax === xMin ? padL : padL + ((x - xMin) / (xMax - xMin)) * innerW);
+  const yScale = (y) => (yMax === yMin ? padT + innerH / 2 : padT + innerH - ((y - yMin) / (yMax - yMin)) * innerH);
+
+  const gridLines = 4;
+  const gridRows = Array.from({ length: gridLines + 1 }, (_, i) => {
+    const value = yMin + ((yMax - yMin) * i) / gridLines;
+    const y = yScale(value);
+    return `
+      <line x1="${padL}" y1="${y.toFixed(2)}" x2="${width - padR}" y2="${y.toFixed(2)}" class="chart-grid" />
+      <text x="${padL - 8}" y="${(y + 4).toFixed(2)}" class="chart-axis-label" text-anchor="end">${escapeHtml(yFormat(value))}</text>
+    `;
+  }).join("");
+
+  const xTicks = 5;
+  const xLabels = Array.from({ length: xTicks + 1 }, (_, i) => {
+    const x = xMin + ((xMax - xMin) * i) / xTicks;
+    return `<text x="${xScale(x).toFixed(2)}" y="${height - 6}" class="chart-axis-label" text-anchor="middle">${escapeHtml(fmtChartDate(x))}</text>`;
+  }).join("");
+
+  const paths = nonEmpty.map((s) => `<path d="${buildChartPath(s.points, xScale, yScale)}" fill="none" stroke="${s.color}" stroke-width="2" />`).join("");
+
+  const legend = nonEmpty.length > 1 ? `
+    <div class="chart-legend">
+      ${nonEmpty.map((s) => `<span class="chart-legend-item"><i style="background:${s.color}"></i>${escapeHtml(s.label)}</span>`).join("")}
+    </div>
+  ` : "";
+
+  return `
+    <div class="chart-wrap">
+      <svg viewBox="0 0 ${width} ${height}" class="chart-svg" preserveAspectRatio="none">
+        ${gridRows}
+        ${paths}
+      </svg>
+      ${legend}
+    </div>
+  `;
+}
+
+// Builds "growth of $100" cumulative index series from monthly-return
+// columns in `benchmarks` (each field compounds independently, starting
+// from whichever month it first has data).
+function buildCumulativeIndexSeries(rows, fields) {
+  return fields.map((field) => {
+    let idx = 100;
+    const points = [];
+    rows.forEach((row) => {
+      const raw = row[field];
+      if (raw === null || raw === undefined || raw === "") return;
+      idx *= 1 + Number(raw) / 100;
+      points.push([new Date(row.month).getTime(), idx]);
+    });
+    const meta = CHART_META[field];
+    return { label: meta.label, color: meta.color, points };
+  });
+}
+
+function benchmarkCharts(db) {
+  const rows = queryMarketRows(db, "SELECT month, plazo_fijo_tna, uva, dolar_mep, spy, tlt, ief FROM benchmarks ORDER BY month ASC");
+  if (!rows.length) return "";
+  const allSeries = buildCumulativeIndexSeries(rows, ["dolar_mep", "plazo_fijo_tna", "uva", "spy", "tlt", "ief"]);
+  const uvaSpySeries = buildCumulativeIndexSeries(rows, ["uva", "spy"]);
+  const idxFormat = (v) => v.toFixed(0);
+  return `
+    <div class="chart-card">
+      <h3>Comparación acumulada de todos los benchmarks</h3>
+      <p class="muted">Crecimiento de una base 100 componiendo el rendimiento mensual publicado de cada benchmark.</p>
+      ${svgLineChart(allSeries, { yFormat: idxFormat })}
+    </div>
+    <div class="chart-card">
+      <h3>UVA vs. SPY</h3>
+      <p class="muted">Misma base 100, para comparar inflación en pesos contra el índice accionario en dólares.</p>
+      ${svgLineChart(uvaSpySeries, { yFormat: idxFormat })}
+    </div>
+  `;
+}
+
+function exchangeRateChart(db) {
+  const rows = queryMarketRows(db, "SELECT date, ars_per_usd FROM exchange_rates WHERE ars_per_usd IS NOT NULL ORDER BY date ASC");
+  if (!rows.length) return "";
+  const series = [{
+    label: "Dólar MEP (ARS por USD)",
+    color: CHART_META.ars_per_usd.color,
+    points: rows.map((r) => [new Date(r.date).getTime(), Number(r.ars_per_usd)])
+  }];
+  return `
+    <div class="chart-card">
+      <h3>Tipo de cambio MEP</h3>
+      <p class="muted">Cotización diaria usada para convertir entre ARS y USD en todos los cálculos.</p>
+      ${svgLineChart(series, { yFormat: (v) => "$" + v.toFixed(0) })}
+    </div>
+  `;
+}
+
+function marketDailyChart(db) {
+  const rows = queryMarketRows(db, "SELECT date, symbol, valor FROM market_daily WHERE valor IS NOT NULL ORDER BY date ASC");
+  if (!rows.length) return "";
+  const bySymbol = new Map();
+  rows.forEach((row) => {
+    const symbol = String(row.symbol || "").toLowerCase();
+    if (!bySymbol.has(symbol)) bySymbol.set(symbol, []);
+    bySymbol.get(symbol).push([new Date(row.date).getTime(), Number(row.valor)]);
+  });
+  const series = Array.from(bySymbol.entries()).map(([symbol, points]) => {
+    const meta = CHART_META[symbol] || { label: symbol.toUpperCase(), color: "#6b7280" };
+    return { label: meta.label, color: meta.color, points };
+  });
+  if (!series.length) return "";
+  return `
+    <div class="chart-card">
+      <h3>Precios diarios</h3>
+      <p class="muted">Precio de cierre diario publicado para cada símbolo.</p>
+      ${svgLineChart(series, { yFormat: (v) => "USD " + v.toFixed(0) })}
+    </div>
+  `;
+}
 
 const DB_TABLES = {
   exchange_rates: { label: "Tipos de cambio", iconName: "dollar-sign",  query: "SELECT * FROM exchange_rates ORDER BY date DESC LIMIT 500",                       count: "SELECT COUNT(*) AS n FROM exchange_rates" },
@@ -2771,6 +3326,10 @@ function renderDbExplorer() {
         ${total} fila${total !== 1 ? "s" : ""} en total${rows.length < total ? ` · mostrando las ${rows.length} más recientes` : ""}
       </p>
 
+      ${tkey === "exchange_rates" ? exchangeRateChart(db) : ""}
+      ${tkey === "benchmarks" ? benchmarkCharts(db) : ""}
+      ${tkey === "market_daily" ? marketDailyChart(db) : ""}
+
       ${rows.length ? `
         <div class="table-wrap">
           <table class="table db-explorer-table">
@@ -2823,6 +3382,7 @@ function render() {
   if (state.screen === "snapshots") return renderSnapshots();
   if (state.screen === "final") return renderFinal();
   if (state.screen === "db-explorer") return renderDbExplorer();
+  if (state.screen === "multi") return renderMultiAnalysis();
 }
 
 function renderBoot() {

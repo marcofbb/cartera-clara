@@ -87,7 +87,9 @@ const state = {
   multiSelectedIds: [],
   multiResult: null,
   multiResultKey: "",
-  multiCalculating: false
+  multiCalculating: false,
+  multiResultRange: null,
+  chartFilters: {}
 };
 
 function pluginRegistry() {
@@ -2274,7 +2276,9 @@ function aiAnalysisExplanation(portfolio, result) {
 // ── Análisis combinado de varias carteras ───────────────────────────────────
 
 function multiResultKey() {
-  return state.multiSelectedIds
+  const range = state.multiResultRange;
+  const rangeKey = range ? `${range.mode}:${range.year || ""}:${range.startYear || ""}:${range.endValue || ""}` : "";
+  const portfoliosKey = state.multiSelectedIds
     .slice()
     .sort()
     .map((id) => {
@@ -2282,11 +2286,79 @@ function multiResultKey() {
       return `${id}:${p?.updated_at || ""}`;
     })
     .join("|");
+  return `${rangeKey}|${portfoliosKey}`;
+}
+
+// Union of each selected portfolio's own year-based range options, so the
+// picker shows every year at least one of them has data for.
+function multiRangeOptionsFor(selectedPortfolios) {
+  const perPortfolio = selectedPortfolios.map((p) => ({ portfolio: p, options: snapshotRangeOptions(p) }));
+  const annualYears = Array.from(new Set(perPortfolio.flatMap(({ options }) => options.annual.map((a) => a.year)))).sort((a, b) => a - b);
+  const rangeStartYears = Array.from(new Set(perPortfolio.flatMap(({ options }) => options.rangeStartYears))).sort((a, b) => a - b);
+  return { perPortfolio, annualYears, rangeStartYears };
+}
+
+function multiEndOptionsForStart(perPortfolio, startYear) {
+  const endYears = new Set();
+  let hasLatest = false;
+  perPortfolio.forEach(({ options }) => {
+    rangeEndOptionsForStart(options, startYear).forEach((opt) => {
+      if (opt.value === "latest") hasLatest = true;
+      else endYears.add(Number(opt.value));
+    });
+  });
+  const opts = Array.from(endYears).sort((a, b) => a - b).map((y) => ({ value: String(y), label: String(y) }));
+  if (hasLatest) opts.push({ value: "latest", label: "Último dato disponible" });
+  return opts;
+}
+
+function ensureMultiResultRange(perPortfolio, annualYears, rangeStartYears) {
+  if (!annualYears.length && !rangeStartYears.length) {
+    state.multiResultRange = { mode: "year", year: null, startYear: null, endValue: "" };
+    return state.multiResultRange;
+  }
+
+  let mode = ["year", "range"].includes(state.multiResultRange?.mode) ? state.multiResultRange.mode : "year";
+  if (mode === "year" && !annualYears.length) mode = "range";
+  if (mode === "range" && !rangeStartYears.length) mode = "year";
+
+  if (mode === "year") {
+    const year = annualYears.includes(Number(state.multiResultRange?.year)) ? Number(state.multiResultRange.year) : annualYears.at(-1);
+    state.multiResultRange = { mode: "year", year };
+  } else {
+    const startYear = rangeStartYears.includes(Number(state.multiResultRange?.startYear)) ? Number(state.multiResultRange.startYear) : rangeStartYears[0];
+    const endOptions = multiEndOptionsForStart(perPortfolio, startYear);
+    const endValue = endOptions.some((o) => o.value === String(state.multiResultRange?.endValue)) ? String(state.multiResultRange.endValue) : (endOptions.at(-1)?.value || "");
+    state.multiResultRange = { mode: "range", startYear, endValue };
+  }
+  return state.multiResultRange;
+}
+
+// Resolves ONE portfolio's own snapshot boundaries for the shared
+// year/range selection — portfolios don't share dates, so each one keeps
+// its own from/to (or is excluded if it has no data in that window).
+function periodForPortfolioInMultiRange(portfolio, range) {
+  if (!range) return null;
+  const options = snapshotRangeOptions(portfolio);
+  if (range.mode === "year") {
+    return options.annual.find((p) => p.year === range.year) || null;
+  }
+  return rangePeriodForYears(options, range.startYear, range.endValue);
+}
+
+function portfolioForMultiRange(portfolio, period) {
+  if (!period) return null;
+  const startBound = { date: period.from, timing: period.fromTiming || "end_day" };
+  const endBound = { date: period.to, timing: period.toTiming || "end_day" };
+  const snapshots = snapshotOptions(portfolio).filter((snapshot) => snapshotCompare(snapshot, startBound) >= 0 && snapshotCompare(snapshot, endBound) <= 0);
+  if (snapshots.length < 2) return null;
+  return { ...portfolio, snapshots };
 }
 
 function queueMultiResultCalculation() {
   const ids = state.multiSelectedIds;
   const key = multiResultKey();
+  const range = state.multiResultRange;
   state.multiCalculating = true;
   state.multiResult = null;
   state.multiResultKey = key;
@@ -2294,11 +2366,15 @@ function queueMultiResultCalculation() {
     try {
       const selected = state.portfolios.filter((p) => ids.includes(p.id));
       if (selected.length < 2) throw new Error("Seleccioná al menos dos carteras.");
-      state.multiResult = await calculateCombinedPortfolios(selected);
+      const filtered = selected
+        .map((p) => portfolioForMultiRange(p, periodForPortfolioInMultiRange(p, range)))
+        .filter(Boolean);
+      if (filtered.length < 2) throw new Error("Para el rango elegido, menos de dos carteras tienen datos suficientes.");
+      state.multiResult = await calculateCombinedPortfolios(filtered);
       state.multiCalculating = false;
       state.notice = null;
       track("multi_results_calculated", {
-        portfolio_count: selected.length,
+        portfolio_count: filtered.length,
         xirr_ars: state.multiResult?.xirr?.ARS?.period ?? null,
         xirr_usd: state.multiResult?.xirr?.USD?.period ?? null
       });
@@ -2310,6 +2386,76 @@ function queueMultiResultCalculation() {
       setNotice("error", error.message || "No se pudo calcular el resultado combinado.");
       render();
     }
+  });
+}
+
+function multiRangeControls(annualYears, rangeStartYears, perPortfolio, range) {
+  if (!annualYears.length && !rangeStartYears.length) {
+    return `<div class="notice warn" style="margin-top:16px">${icon("calendar-clock", 18)}<span>Ninguna de las carteras elegidas tiene snapshots de inicio/cierre de año — no se puede filtrar por año.</span></div>`;
+  }
+  const annualOptions = annualYears.map((year) => `<option value="${year}" ${year === range.year ? "selected" : ""}>${year}</option>`).join("");
+  const startYear = range.startYear || rangeStartYears[0] || "";
+  const endOptions = startYear ? multiEndOptionsForStart(perPortfolio, Number(startYear)) : [];
+  const rangeEndOptions = endOptions.map((item) => `<option value="${escapeHtml(item.value)}" ${item.value === String(range.endValue || "") ? "selected" : ""}>${escapeHtml(item.label)}</option>`).join("");
+  const rangeStartOptions = rangeStartYears.map((year) => `<option value="${year}" ${year === Number(startYear) ? "selected" : ""}>${year}</option>`).join("");
+  return `
+    <div class="range-panel" data-range-mode="${escapeHtml(range.mode)}" style="margin-top:16px">
+      <div>
+        <div class="metric-label">Rango de cálculo</div>
+        <p class="muted">Filtrá por año calendario o rango de años. Cada cartera aporta sus propios snapshots dentro del rango elegido; las que no tengan datos en ese rango quedan afuera del combinado.</p>
+        <div class="segment-control" role="tablist" aria-label="Modo de rango">
+          <button type="button" class="${range.mode === "year" ? "active" : ""}" data-multi-range-mode-option="year" ${annualYears.length ? "" : "disabled"}>Anual</button>
+          <button type="button" class="${range.mode === "range" ? "active" : ""}" data-multi-range-mode-option="range" ${rangeStartYears.length ? "" : "disabled"}>Rango</button>
+        </div>
+      </div>
+      <div class="range-fields ${range.mode === "range" ? "range-years" : ""}">
+        ${range.mode === "year" ? `
+          <label class="field full">
+            <span class="label">Año</span>
+            <select class="select" id="multiRangeYear">${annualOptions}</select>
+          </label>
+        ` : ""}
+        ${range.mode === "range" ? `
+          <label class="field">
+            <span class="label">Desde</span>
+            <select class="select" id="multiRangeStartYear">${rangeStartOptions}</select>
+          </label>
+          <label class="field">
+            <span class="label">Hasta</span>
+            <select class="select" id="multiRangeEndYear">${rangeEndOptions}</select>
+          </label>
+        ` : ""}
+      </div>
+    </div>
+  `;
+}
+
+function bindMultiRangeControls(perPortfolio, annualYears, rangeStartYears) {
+  document.querySelectorAll("[data-multi-range-mode-option]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const mode = button.dataset.multiRangeModeOption;
+      if (mode === "year") state.multiResultRange = { mode, year: annualYears.at(-1) };
+      if (mode === "range") {
+        const startYear = rangeStartYears[0];
+        const endOptions = multiEndOptionsForStart(perPortfolio, startYear);
+        state.multiResultRange = { mode, startYear, endValue: endOptions.at(-1)?.value || "" };
+      }
+      render();
+    });
+  });
+  $("#multiRangeYear")?.addEventListener("change", (event) => {
+    state.multiResultRange = { ...state.multiResultRange, year: Number(event.target.value) };
+    render();
+  });
+  $("#multiRangeStartYear")?.addEventListener("change", (event) => {
+    const startYear = Number(event.target.value);
+    const endOptions = multiEndOptionsForStart(perPortfolio, startYear);
+    state.multiResultRange = { mode: "range", startYear, endValue: endOptions.at(-1)?.value || "" };
+    render();
+  });
+  $("#multiRangeEndYear")?.addEventListener("change", (event) => {
+    state.multiResultRange = { ...state.multiResultRange, endValue: event.target.value };
+    render();
   });
 }
 
@@ -2359,6 +2505,10 @@ function renderMultiAnalysis() {
     return;
   }
 
+  const selectedPortfolios = state.portfolios.filter((p) => state.multiSelectedIds.includes(p.id));
+  const { perPortfolio, annualYears, rangeStartYears } = multiRangeOptionsFor(selectedPortfolios);
+  const range = selectedPortfolios.length >= 2 ? ensureMultiResultRange(perPortfolio, annualYears, rangeStartYears) : null;
+
   const key = multiResultKey();
   const hasResult = !state.multiCalculating && state.multiResult && state.multiResultKey === key;
 
@@ -2387,7 +2537,8 @@ function renderMultiAnalysis() {
           `;
         }).join("")}
       </div>
-      <div class="actions actions-right">
+      ${range ? multiRangeControls(annualYears, rangeStartYears, perPortfolio, range) : ""}
+      <div class="actions actions-right" style="margin-top:16px">
         <button class="btn btn-secondary" data-action="back">${icon("arrow-left", 16)}Volver</button>
         <button class="btn btn-primary" data-action="calc-multi" ${state.multiSelectedIds.length < 2 ? "disabled" : ""}>Calcular resultado combinado${icon("arrow-right", 16)}</button>
       </div>
@@ -2428,6 +2579,7 @@ function renderMultiAnalysis() {
           render();
         });
       });
+      if (range) bindMultiRangeControls(perPortfolio, annualYears, rangeStartYears);
       $("[data-action='back']").addEventListener("click", () => {
         state.screen = "start";
         render();
@@ -3102,19 +3254,60 @@ const CHART_META = {
   ief: { label: "IEF", color: "#0891b2" }
 };
 
-function fmtChartDate(ms) {
-  return new Date(ms).toLocaleDateString("es-AR", { month: "short", year: "2-digit", timeZone: "UTC" });
+function fmtChartDate(ms, precise = false) {
+  return new Date(ms).toLocaleDateString("es-AR", precise
+    ? { day: "2-digit", month: "short", year: "numeric", timeZone: "UTC" }
+    : { month: "short", year: "2-digit", timeZone: "UTC" });
 }
 
 function buildChartPath(points, xScale, yScale) {
   return points.map((p, i) => `${i === 0 ? "M" : "L"} ${xScale(p[0]).toFixed(2)} ${yScale(p[1]).toFixed(2)}`).join(" ");
 }
 
-// Renders a self-contained, dependency-free SVG line chart (no charting lib
-// needed — the app runs 100% client-side, keeps that footprint small).
-function svgLineChart(series, opts = {}) {
-  const nonEmpty = series.filter((s) => s.points.length > 1);
-  if (!nonEmpty.length) return `<p class="muted">Sin datos suficientes para graficar.</p>`;
+function chartFilter(chartId) {
+  return state.chartFilters[chartId] || (state.chartFilters[chartId] = { from: "", to: "", hidden: [] });
+}
+
+function filterPointsByDate(points, filter) {
+  const fromMs = filter.from ? new Date(`${filter.from}T00:00:00Z`).getTime() : -Infinity;
+  const toMs = filter.to ? new Date(`${filter.to}T23:59:59Z`).getTime() : Infinity;
+  return points.filter((p) => p[0] >= fromMs && p[0] <= toMs);
+}
+
+// Holds the raw series + scale metadata for each rendered chart, keyed by
+// chartId, so the hover tooltip (bound after render) can look up the
+// nearest point without re-parsing the DOM.
+const CHART_DATA_CACHE = {};
+
+function nearestChartPoint(points, targetX) {
+  if (!points.length) return null;
+  let lo = 0, hi = points.length - 1;
+  if (targetX <= points[0][0]) return points[0];
+  if (targetX >= points[hi][0]) return points[hi];
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (points[mid][0] < targetX) lo = mid + 1; else hi = mid;
+  }
+  const a = points[lo - 1], b = points[lo];
+  if (!a) return b;
+  return (targetX - a[0]) < (b[0] - targetX) ? a : b;
+}
+
+// Renders a self-contained, dependency-free SVG line chart with a clickable
+// legend (toggle series on/off) and a hover tooltip — no charting lib needed,
+// the app runs 100% client-side and this keeps that footprint small.
+function svgLineChart(chartId, series, opts = {}) {
+  const filter = chartFilter(chartId);
+  const withPoints = series.map((s) => ({
+    ...s,
+    points: filterPointsByDate(s.points, filter),
+    hidden: filter.hidden.includes(s.label)
+  }));
+  const visible = withPoints.filter((s) => !s.hidden && s.points.length > 1);
+
+  if (!withPoints.some((s) => s.points.length > 1)) {
+    return `<p class="muted">Sin datos suficientes para graficar en el rango elegido.</p>`;
+  }
 
   const width = 960;
   const height = opts.height || 240;
@@ -3123,51 +3316,161 @@ function svgLineChart(series, opts = {}) {
   const innerH = height - padT - padB;
   const yFormat = opts.yFormat || ((v) => v.toFixed(2));
 
-  const allPoints = nonEmpty.flatMap((s) => s.points);
-  const xs = allPoints.map((p) => p[0]);
-  const ys = allPoints.map((p) => p[1]);
-  const xMin = Math.min(...xs), xMax = Math.max(...xs);
-  const yMinRaw = Math.min(...ys), yMaxRaw = Math.max(...ys);
-  const yPad = (yMaxRaw - yMinRaw) * 0.08 || Math.abs(yMaxRaw || 1) * 0.08;
-  const yMin = yMinRaw - yPad;
-  const yMax = yMaxRaw + yPad;
+  let legend = "";
+  if (!visible.length) {
+    legend = `<p class="muted">Todas las líneas están apagadas — hacé clic en la leyenda para prenderlas.</p>`;
+  } else {
+    const allPoints = visible.flatMap((s) => s.points);
+    const xs = allPoints.map((p) => p[0]);
+    const ys = allPoints.map((p) => p[1]);
+    const xMin = Math.min(...xs), xMax = Math.max(...xs);
+    const yMinRaw = Math.min(...ys), yMaxRaw = Math.max(...ys);
+    const yPad = (yMaxRaw - yMinRaw) * 0.08 || Math.abs(yMaxRaw || 1) * 0.08;
+    const yMin = yMinRaw - yPad;
+    const yMax = yMaxRaw + yPad;
 
-  const xScale = (x) => (xMax === xMin ? padL : padL + ((x - xMin) / (xMax - xMin)) * innerW);
-  const yScale = (y) => (yMax === yMin ? padT + innerH / 2 : padT + innerH - ((y - yMin) / (yMax - yMin)) * innerH);
+    const xScale = (x) => (xMax === xMin ? padL : padL + ((x - xMin) / (xMax - xMin)) * innerW);
+    const yScale = (y) => (yMax === yMin ? padT + innerH / 2 : padT + innerH - ((y - yMin) / (yMax - yMin)) * innerH);
 
-  const gridLines = 4;
-  const gridRows = Array.from({ length: gridLines + 1 }, (_, i) => {
-    const value = yMin + ((yMax - yMin) * i) / gridLines;
-    const y = yScale(value);
+    const gridLines = 4;
+    const gridRows = Array.from({ length: gridLines + 1 }, (_, i) => {
+      const value = yMin + ((yMax - yMin) * i) / gridLines;
+      const y = yScale(value);
+      return `
+        <line x1="${padL}" y1="${y.toFixed(2)}" x2="${width - padR}" y2="${y.toFixed(2)}" class="chart-grid" />
+        <text x="${padL - 8}" y="${(y + 4).toFixed(2)}" class="chart-axis-label" text-anchor="end">${escapeHtml(yFormat(value))}</text>
+      `;
+    }).join("");
+
+    const xTicks = 5;
+    const xLabels = Array.from({ length: xTicks + 1 }, (_, i) => {
+      const x = xMin + ((xMax - xMin) * i) / xTicks;
+      return `<text x="${xScale(x).toFixed(2)}" y="${height - 6}" class="chart-axis-label" text-anchor="middle">${escapeHtml(fmtChartDate(x))}</text>`;
+    }).join("");
+
+    const paths = visible.map((s) => `<path d="${buildChartPath(s.points, xScale, yScale)}" fill="none" stroke="${s.color}" stroke-width="2" />`).join("");
+
+    CHART_DATA_CACHE[chartId] = { series: visible, xMin, xMax, padL, padR, width, height, yFormat };
+
     return `
-      <line x1="${padL}" y1="${y.toFixed(2)}" x2="${width - padR}" y2="${y.toFixed(2)}" class="chart-grid" />
-      <text x="${padL - 8}" y="${(y + 4).toFixed(2)}" class="chart-axis-label" text-anchor="end">${escapeHtml(yFormat(value))}</text>
+      <div class="chart-wrap" data-chart-id="${escapeHtml(chartId)}">
+        <svg viewBox="0 0 ${width} ${height}" class="chart-svg" preserveAspectRatio="none">
+          ${gridRows}
+          ${xLabels}
+          ${paths}
+        </svg>
+        <div class="chart-tooltip"></div>
+        ${legendHtml(chartId, withPoints)}
+      </div>
     `;
-  }).join("");
-
-  const xTicks = 5;
-  const xLabels = Array.from({ length: xTicks + 1 }, (_, i) => {
-    const x = xMin + ((xMax - xMin) * i) / xTicks;
-    return `<text x="${xScale(x).toFixed(2)}" y="${height - 6}" class="chart-axis-label" text-anchor="middle">${escapeHtml(fmtChartDate(x))}</text>`;
-  }).join("");
-
-  const paths = nonEmpty.map((s) => `<path d="${buildChartPath(s.points, xScale, yScale)}" fill="none" stroke="${s.color}" stroke-width="2" />`).join("");
-
-  const legend = nonEmpty.length > 1 ? `
-    <div class="chart-legend">
-      ${nonEmpty.map((s) => `<span class="chart-legend-item"><i style="background:${s.color}"></i>${escapeHtml(s.label)}</span>`).join("")}
-    </div>
-  ` : "";
+  }
 
   return `
-    <div class="chart-wrap">
-      <svg viewBox="0 0 ${width} ${height}" class="chart-svg" preserveAspectRatio="none">
-        ${gridRows}
-        ${paths}
-      </svg>
+    <div class="chart-wrap" data-chart-id="${escapeHtml(chartId)}">
       ${legend}
+      ${legendHtml(chartId, withPoints)}
     </div>
   `;
+}
+
+function legendHtml(chartId, seriesWithHidden) {
+  if (seriesWithHidden.length <= 1) return "";
+  return `
+    <div class="chart-legend">
+      ${seriesWithHidden.map((s) => `
+        <button type="button" class="chart-legend-item ${s.hidden ? "off" : ""}" data-chart-id="${escapeHtml(chartId)}" data-series-toggle="${escapeHtml(s.label)}">
+          <i style="background:${s.hidden ? "transparent" : s.color};border-color:${s.color}"></i>${escapeHtml(s.label)}
+        </button>
+      `).join("")}
+    </div>
+  `;
+}
+
+function chartDateRangeControls(chartId, minDate, maxDate) {
+  const filter = chartFilter(chartId);
+  const minIso = new Date(minDate).toISOString().slice(0, 10);
+  const maxIso = new Date(maxDate).toISOString().slice(0, 10);
+  const hasCustomRange = filter.from || filter.to;
+  return `
+    <div class="chart-range-controls">
+      <label class="field">
+        <span class="label">Desde</span>
+        <input type="date" class="select" data-chart-id="${escapeHtml(chartId)}" data-chart-range="from" min="${minIso}" max="${maxIso}" value="${escapeHtml(filter.from || "")}" placeholder="${minIso}" />
+      </label>
+      <label class="field">
+        <span class="label">Hasta</span>
+        <input type="date" class="select" data-chart-id="${escapeHtml(chartId)}" data-chart-range="to" min="${minIso}" max="${maxIso}" value="${escapeHtml(filter.to || "")}" placeholder="${maxIso}" />
+      </label>
+      ${hasCustomRange ? `<button type="button" class="btn btn-ghost chart-range-reset" data-chart-id="${escapeHtml(chartId)}">${icon("x", 14)}Quitar filtro</button>` : ""}
+    </div>
+  `;
+}
+
+function bindChartControls(root) {
+  root.querySelectorAll("[data-series-toggle]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const chartId = button.dataset.chartId;
+      const label = button.dataset.seriesToggle;
+      const filter = chartFilter(chartId);
+      filter.hidden = filter.hidden.includes(label) ? filter.hidden.filter((l) => l !== label) : [...filter.hidden, label];
+      render();
+    });
+  });
+  root.querySelectorAll("[data-chart-range]").forEach((input) => {
+    input.addEventListener("change", () => {
+      const chartId = input.dataset.chartId;
+      const filter = chartFilter(chartId);
+      filter[input.dataset.chartRange] = input.value;
+      render();
+    });
+  });
+  root.querySelectorAll(".chart-range-reset").forEach((button) => {
+    button.addEventListener("click", () => {
+      const filter = chartFilter(button.dataset.chartId);
+      filter.from = "";
+      filter.to = "";
+      render();
+    });
+  });
+  root.querySelectorAll("[data-chart-id]").forEach((wrap) => bindChartTooltip(wrap));
+}
+
+function bindChartTooltip(wrap) {
+  const chartId = wrap.dataset.chartId;
+  const data = CHART_DATA_CACHE[chartId];
+  const svg = wrap.querySelector(".chart-svg");
+  const tooltip = wrap.querySelector(".chart-tooltip");
+  if (!data || !svg || !tooltip) return;
+
+  const { series, xMin, xMax, padL, padR, width, yFormat } = data;
+  const innerW = width - padL - padR;
+
+  svg.addEventListener("mousemove", (event) => {
+    const rect = svg.getBoundingClientRect();
+    if (!rect.width) return;
+    const fracX = (event.clientX - rect.left) / rect.width;
+    const svgX = fracX * width;
+    const dataX = xMin + ((svgX - padL) / innerW) * (xMax - xMin);
+    if (!Number.isFinite(dataX)) return;
+
+    const rows = series.map((s) => {
+      const point = nearestChartPoint(s.points, dataX);
+      return point ? { label: s.label, color: s.color, date: point[0], value: point[1] } : null;
+    }).filter(Boolean);
+    if (!rows.length) return;
+
+    tooltip.innerHTML = `
+      <div class="chart-tooltip-date">${escapeHtml(fmtChartDate(rows[0].date, true))}</div>
+      ${rows.map((r) => `<div class="chart-tooltip-row"><i style="background:${r.color}"></i>${escapeHtml(r.label)}: <strong>${escapeHtml(yFormat(r.value))}</strong></div>`).join("")}
+    `;
+    tooltip.classList.add("visible");
+    const wrapRect = wrap.getBoundingClientRect();
+    const left = Math.min(event.clientX - wrapRect.left + 14, wrapRect.width - 180);
+    tooltip.style.left = `${Math.max(0, left)}px`;
+    tooltip.style.top = `${event.clientY - wrapRect.top + 14}px`;
+  });
+
+  svg.addEventListener("mouseleave", () => tooltip.classList.remove("visible"));
 }
 
 // Builds "growth of $100" cumulative index series from monthly-return
@@ -3194,16 +3497,20 @@ function benchmarkCharts(db) {
   const allSeries = buildCumulativeIndexSeries(rows, ["dolar_mep", "plazo_fijo_tna", "uva", "spy", "tlt", "ief"]);
   const uvaSpySeries = buildCumulativeIndexSeries(rows, ["uva", "spy"]);
   const idxFormat = (v) => v.toFixed(0);
+  const minDate = new Date(rows[0].month).getTime();
+  const maxDate = new Date(rows[rows.length - 1].month).getTime();
   return `
     <div class="chart-card">
       <h3>Comparación acumulada de todos los benchmarks</h3>
-      <p class="muted">Crecimiento de una base 100 componiendo el rendimiento mensual publicado de cada benchmark.</p>
-      ${svgLineChart(allSeries, { yFormat: idxFormat })}
+      <p class="muted">Crecimiento de una base 100 componiendo el rendimiento mensual publicado de cada benchmark. Pasá el mouse por el gráfico para ver fecha y valor, hacé clic en la leyenda para apagar/prender líneas.</p>
+      ${chartDateRangeControls("benchmarks_all", minDate, maxDate)}
+      ${svgLineChart("benchmarks_all", allSeries, { yFormat: idxFormat })}
     </div>
     <div class="chart-card">
       <h3>UVA vs. SPY</h3>
       <p class="muted">Misma base 100, para comparar inflación en pesos contra el índice accionario en dólares.</p>
-      ${svgLineChart(uvaSpySeries, { yFormat: idxFormat })}
+      ${chartDateRangeControls("benchmarks_uva_spy", minDate, maxDate)}
+      ${svgLineChart("benchmarks_uva_spy", uvaSpySeries, { yFormat: idxFormat })}
     </div>
   `;
 }
@@ -3216,11 +3523,14 @@ function exchangeRateChart(db) {
     color: CHART_META.ars_per_usd.color,
     points: rows.map((r) => [new Date(r.date).getTime(), Number(r.ars_per_usd)])
   }];
+  const minDate = new Date(rows[0].date).getTime();
+  const maxDate = new Date(rows[rows.length - 1].date).getTime();
   return `
     <div class="chart-card">
       <h3>Tipo de cambio MEP</h3>
-      <p class="muted">Cotización diaria usada para convertir entre ARS y USD en todos los cálculos.</p>
-      ${svgLineChart(series, { yFormat: (v) => "$" + v.toFixed(0) })}
+      <p class="muted">Cotización diaria usada para convertir entre ARS y USD en todos los cálculos. Pasá el mouse por el gráfico para ver fecha y valor.</p>
+      ${chartDateRangeControls("exchange_rate", minDate, maxDate)}
+      ${svgLineChart("exchange_rate", series, { yFormat: (v) => "$" + v.toFixed(0) })}
     </div>
   `;
 }
@@ -3239,11 +3549,14 @@ function marketDailyChart(db) {
     return { label: meta.label, color: meta.color, points };
   });
   if (!series.length) return "";
+  const minDate = new Date(rows[0].date).getTime();
+  const maxDate = new Date(rows[rows.length - 1].date).getTime();
   return `
     <div class="chart-card">
       <h3>Precios diarios</h3>
-      <p class="muted">Precio de cierre diario publicado para cada símbolo.</p>
-      ${svgLineChart(series, { yFormat: (v) => "USD " + v.toFixed(0) })}
+      <p class="muted">Precio de cierre diario publicado para cada símbolo. Pasá el mouse por el gráfico para ver fecha y valor, hacé clic en la leyenda para apagar/prender símbolos.</p>
+      ${chartDateRangeControls("market_daily", minDate, maxDate)}
+      ${svgLineChart("market_daily", series, { yFormat: (v) => "USD " + v.toFixed(0) })}
     </div>
   `;
 }
@@ -3361,6 +3674,7 @@ function renderDbExplorer() {
         state.screen = "final";
         render();
       });
+      bindChartControls(app);
     }
   });
 }

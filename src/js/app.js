@@ -2666,6 +2666,7 @@ function benchmarkSourceLabel(item) {
   if (item.id === "dolar_mep" && item.source === "exchange_rates") return "Variación del tipo de cambio MEP diario";
   if (item.id === "plazo_fijo") return "TNA mensual prorrateada por días";
   if (item.source === "daily_prices") return "Simulación con precios diarios de SPY";
+  if (item.source === "cashflow_simulation") return `Simulación de tus flujos comprando/vendiendo ${item.id === "uva_cf" ? "UVA" : "dólar MEP"} en cada fecha`;
   return "Rendimiento mensual ponderado por días activos";
 }
 
@@ -2683,6 +2684,7 @@ function resultCard(currency, result, xirr, allResult) {
         <div><div class="metric-label">Valor final</div><div class="metric-value">${fmtMoney(result.emv, currency)}</div><p class="muted">${fmtDate(result.emv_date)}</p></div>
         <div><div class="metric-label">Aportes</div><div class="metric-value pos">${fmtMoney(result.aportes, currency)}</div></div>
         <div><div class="metric-label">Retiros</div><div class="metric-value neg">${fmtMoney(result.retiros, currency)}</div></div>
+        <div style="grid-column:1/-1"><div class="metric-label">Resultado</div><div class="metric-value ${toneClass(result.ganancia_neta)}">${fmtSignedMoney(result.ganancia_neta, currency)}</div><p class="muted">Ganancia/pérdida neta del período.</p></div>
       </div>
       ${benchmarkChips(allResult, currency)}
     </div>

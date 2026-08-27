@@ -64,6 +64,121 @@ function spyPriceAt(db, date) {
   return Number.isFinite(val) && val > 0 ? val : null;
 }
 
+const monthlyIndexCache = new Map();
+
+// Builds a synthetic daily index from a monthly-return column in `benchmarks`
+// (e.g. uva, dolar_mep) by compounding within each month using the same
+// active-days/month-days weighting used elsewhere for partial periods.
+function monthlyIndexAt(db, field, date, warnings) {
+  let table = monthlyIndexCache.get(field);
+  if (!table) {
+    const rows = queryRows(db, `SELECT month, ${field} FROM benchmarks WHERE ${field} IS NOT NULL ORDER BY month ASC`);
+    table = [];
+    let idx = 1;
+    rows.forEach((row) => {
+      const monthlyReturn = Number(row[field]) / 100;
+      table.push({ month: row.month, start_index: idx, monthly_return: monthlyReturn });
+      idx *= 1 + monthlyReturn;
+    });
+    monthlyIndexCache.set(field, table);
+  }
+  if (!table.length) {
+    warnings.push(`No hay datos de ${field} disponibles para simular flujos.`);
+    return null;
+  }
+  const dateMonth = `${date.slice(0, 7)}-01`;
+  let entry = null;
+  for (let i = table.length - 1; i >= 0; i--) {
+    if (table[i].month <= dateMonth) { entry = table[i]; break; }
+  }
+  if (!entry) return table[0].start_index;
+  const activeDays = Math.max(0, daysBetween(entry.month, date) + 1);
+  const totalDays = daysInMonth(entry.month);
+  const weight = Math.min(1, activeDays / totalDays);
+  return entry.start_index * Math.pow(1 + entry.monthly_return, weight);
+}
+
+// Simulates converting the portfolio's cash flows into units of a priced
+// asset/index (SPY, USD-MEP, UVA, ...) at the flow date, then computes the
+// money-weighted (XIRR) return that simulation would have produced.
+function computeCashflowBenchmark(db, result, movements, warnings, currency, priceAtFn) {
+  if (!result) return null;
+  const startSnap = { date: result.bmv_date, timing: result.bmv_timing || "end_day" };
+  const endSnap = { date: result.emv_date, timing: result.emv_timing || "end_day" };
+
+  const priceStart = priceAtFn(db, result.bmv_date, warnings);
+  const priceEnd = priceAtFn(db, result.emv_date, warnings);
+  if (!priceStart || !priceEnd) return null;
+
+  const steps = [];
+  let units = result.bmv / priceStart;
+  steps.push({ date: result.bmv_date, type: "inicial", amount: result.bmv, price: priceStart, units_delta: units, units_running: units });
+
+  const flows = [];
+  if (result.bmv !== 0) flows.push({ date: result.bmv_date, amount: -result.bmv });
+
+  let failed = false;
+  movementsBetween(movements, startSnap, endSnap).forEach((movement) => {
+    if (failed) return;
+    const price = priceAtFn(db, movement.date, warnings);
+    const conv = conversionForDisplay(db, Number(movement.monto), movement.moneda, movement.date, currency, warnings);
+    if (!price || !conv) { failed = true; return; }
+    let delta;
+    if (movement.tipo === "ingreso") {
+      delta = conv.amount / price;
+      units += delta;
+    } else {
+      delta = -Math.min(conv.amount / price, units);
+      units = Math.max(0, units + delta);
+    }
+    steps.push({
+      date: movement.date,
+      type: movement.tipo,
+      amount: conv.amount,
+      amount_original: conv.source_amount,
+      currency_original: conv.source_currency,
+      rate: conv.converted ? conv.rate : null,
+      price,
+      units_delta: delta,
+      units_running: units
+    });
+    flows.push({ date: movement.date, amount: movement.tipo === "ingreso" ? -conv.amount : conv.amount });
+  });
+
+  if (failed) return null;
+
+  const emv = units * priceEnd;
+  steps.push({ date: result.emv_date, type: "final", price: priceEnd, units_running: units, amount: emv });
+  if (emv !== 0) flows.push({ date: result.emv_date, amount: emv });
+
+  const sortedFlows = flows.sort((a, b) => a.date.localeCompare(b.date));
+  if (!sortedFlows.some((f) => f.amount > 0) || !sortedFlows.some((f) => f.amount < 0)) return null;
+
+  const annual = xirr(sortedFlows);
+  if (annual === null) return null;
+  const days = daysBetween(sortedFlows[0].date, sortedFlows[sortedFlows.length - 1].date);
+  const period = days > 0 ? Math.pow(1 + annual, days / 365) - 1 : null;
+  if (period === null) return null;
+
+  return {
+    return: period,
+    detail: {
+      method: "cashflow_simulation",
+      bmv_date: result.bmv_date,
+      emv_date: result.emv_date,
+      price_start: priceStart,
+      price_end: priceEnd,
+      initial_units: result.bmv / priceStart,
+      final_units: units,
+      emv_simulated: emv,
+      xirr_annual: annual,
+      xirr_period: period,
+      xirr_days: days,
+      steps
+    }
+  };
+}
+
 function computeSpyCashflowDetail(db, result, movements, warnings) {
   if (!result) return null;
   const startSnap = { date: result.bmv_date, timing: result.bmv_timing || "end_day" };
@@ -543,6 +658,26 @@ export async function calculatePortfolio(portfolio) {
         }
       }
     }
+  }
+
+  // Dólar MEP equivalent: simulate buying/selling USD with the same ARS cash flows
+  const mepCf = results.ARS ? computeCashflowBenchmark(db, results.ARS, movements, warnings, "ARS", rateAt) : null;
+  if (mepCf) {
+    const chip = { id: "dolar_mep_cf", label: "Dólar MEP (con tus flujos)", group: "ARS", return: mepCf.return, source: "cashflow_simulation", detail: mepCf.detail };
+    const idx = benchmarks.findIndex((b) => b.id === "dolar_mep");
+    if (idx >= 0) benchmarks.splice(idx + 1, 0, chip);
+    else benchmarks.push(chip);
+  }
+
+  // UVA equivalent: simulate holding a UVA-indexed asset with the same ARS cash flows
+  const uvaCf = results.ARS
+    ? computeCashflowBenchmark(db, results.ARS, movements, warnings, "ARS", (dbArg, date, w) => monthlyIndexAt(dbArg, "uva", date, w))
+    : null;
+  if (uvaCf) {
+    const chip = { id: "uva_cf", label: "UVA (con tus flujos)", group: "ARS", return: uvaCf.return, source: "cashflow_simulation", detail: uvaCf.detail };
+    const idx = benchmarks.findIndex((b) => b.id === "uva");
+    if (idx >= 0) benchmarks.splice(idx + 1, 0, chip);
+    else benchmarks.push(chip);
   }
 
   const metaRows = queryRows(db, "SELECT key, value FROM meta");
